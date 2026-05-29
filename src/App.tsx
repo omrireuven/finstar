@@ -8,8 +8,6 @@ import Dashboard from './pages/Dashboard';
 import Expenses from './pages/Expenses';
 import Stocks from './pages/Stocks';
 import Savings from './pages/Savings';
-import Gemel from './pages/Gemel';
-import Pension from './pages/Pension';
 import Income from './pages/Income';
 import RecurringCharges from './pages/RecurringCharges';
 import Goals from './pages/Goals';
@@ -47,8 +45,8 @@ function AppRoutes() {
         <Route path="/expenses" element={<Expenses />} />
         <Route path="/stocks" element={<Stocks />} />
         <Route path="/savings" element={<Savings />} />
-        <Route path="/gemel" element={<Gemel />} />
-        <Route path="/pension" element={<Pension />} />
+        <Route path="/gemel" element={<Navigate to="/savings" replace />} />
+        <Route path="/pension" element={<Navigate to="/savings" replace />} />
         <Route path="/income" element={<Income />} />
         <Route path="/recurring" element={<RecurringCharges />} />
         <Route path="/goals" element={<Goals />} />

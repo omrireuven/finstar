@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import {
-  LayoutDashboard, TrendingUp, PiggyBank, Landmark, Briefcase,
+  LayoutDashboard, TrendingUp, PiggyBank,
   Wallet, CreditCard, Target, BarChart3, Calculator,
   Bell, Star, DollarSign, Settings,
 } from 'lucide-react';
@@ -18,10 +18,8 @@ const navGroups: { label: string; items: NavItem[] }[] = [
   {
     label: 'נכסים',
     items: [
-      { to: '/stocks',  label: 'מניות וניירות ערך',   icon: TrendingUp },
-      { to: '/savings', label: 'חסכונות ופיקדונות',   icon: PiggyBank  },
-      { to: '/gemel',   label: 'קופות גמל',            icon: Landmark   },
-      { to: '/pension', label: 'פנסיה',                icon: Briefcase  },
+      { to: '/stocks',  label: 'מניות וניירות ערך',      icon: TrendingUp },
+      { to: '/savings', label: 'חסכונות וחיסכון ארוך', icon: PiggyBank  },
     ],
   },
   {

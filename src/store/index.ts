@@ -35,6 +35,7 @@ interface FinstarState {
   journal: JournalEntry[];
   lastPriceUpdate: string;
   categories: CategoryDef[];
+  categoryRules: Record<string, Category>; // business name → category
 
   addTransactions: (txns: Transaction[]) => void;
   updateTransaction: (id: string, patch: Partial<Transaction>) => void;
@@ -73,6 +74,10 @@ interface FinstarState {
   updateCategory: (id: string, patch: { name?: string; color?: string }) => void;
   removeCategory: (id: string) => void;
 
+  /** Save a business→category rule and retroactively update all matching transactions. */
+  setCategoryRule: (business: string, category: Category) => void;
+  deleteCategoryRule: (business: string) => void;
+
   resetAllData: () => void;
 
   addJournalEntry: (e: Omit<JournalEntry, 'id'>) => void;
@@ -94,11 +99,21 @@ export const useStore = create<FinstarState>()(
       journal: mockJournal,
       lastPriceUpdate: '',
       categories: INITIAL_CATEGORIES,
+      categoryRules: {},
 
       addTransactions: (txns) =>
         set((s) => {
-          const existingIds = new Set(s.transactions.map((t) => `${t.date}-${t.business}-${t.amount}`));
-          const fresh = txns.filter((t) => !existingIds.has(`${t.date}-${t.business}-${t.amount}`));
+          const existingKeys = new Set(s.transactions.map((t) => `${t.date}-${t.business}-${t.amount}`));
+          const fresh = txns
+            .filter((t) => !existingKeys.has(`${t.date}-${t.business}-${t.amount}`))
+            .map((t) => {
+              const ruleCategory = s.categoryRules[t.business];
+              // '__manual__' = user wants to categorize this business manually every time
+              if (ruleCategory && ruleCategory !== '__manual__') {
+                return { ...t, category: ruleCategory, categoryOverride: ruleCategory, aiCategorized: false };
+              }
+              return t;
+            });
           return { transactions: [...s.transactions, ...fresh] };
         }),
 
@@ -203,6 +218,23 @@ export const useStore = create<FinstarState>()(
           };
         }),
 
+      setCategoryRule: (business, category) =>
+        set((s) => ({
+          categoryRules: { ...s.categoryRules, [business]: category },
+          transactions: s.transactions.map((t) =>
+            t.business === business
+              ? { ...t, category, categoryOverride: category, aiCategorized: false }
+              : t
+          ),
+        })),
+
+      deleteCategoryRule: (business) =>
+        set((s) => {
+          const rules = { ...s.categoryRules };
+          delete rules[business];
+          return { categoryRules: rules };
+        }),
+
       resetAllData: () =>
         set({
           transactions: [],
@@ -217,6 +249,7 @@ export const useStore = create<FinstarState>()(
           goals: [],
           journal: [],
           lastPriceUpdate: '',
+          categoryRules: {},
           // categories kept — user configured them
         }),
 

@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
-import { useStore, usePortfolioSummary } from '../store';
+import { useStore, usePortfolioSummary, useCategoryColorMap } from '../store';
 import Card from '../components/common/Card';
 import { fmtCurrency, currentMonthKey, fmtMonthYear } from '../utils/format';
 import { AlertCircle, Calendar, ArrowLeft } from 'lucide-react';
@@ -26,6 +26,7 @@ function KPICard({ label, value, sub, color, accent, onClick }: {
 export default function Dashboard() {
   const navigate = useNavigate();
   const { transactions, savings, gemel, pension, income, recurring } = useStore();
+  const colorMap = useCategoryColorMap();
   const { totalValue: portfolioValue } = usePortfolioSummary();
 
   const now = new Date();
@@ -50,12 +51,12 @@ export default function Dashboard() {
     { name: 'פנסיה', value: totalPension, color: '#8b5cf6' },
   ].filter((d) => d.value > 0);
 
-  // Category breakdown this month
+  // Category breakdown this month — all categories, sorted desc
   const byCat: Record<string, number> = {};
   for (const t of monthTxns) {
     byCat[t.category] = (byCat[t.category] || 0) + t.amount;
   }
-  const topCats = Object.entries(byCat).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const allCats = Object.entries(byCat).sort((a, b) => b[1] - a[1]);
 
   // Health score
   const savingsRate = monthIncome > 0 ? (cashFlow / monthIncome) * 100 : 0;
@@ -180,33 +181,69 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {/* Top categories */}
+      {/* Category breakdown */}
       <Card>
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-5">
           <h2 className="font-semibold text-slate-900">הוצאות לפי קטגוריה — {fmtMonthYear(now.getFullYear(), now.getMonth() + 1)}</h2>
           <button onClick={() => navigate('/expenses')} className="text-sm text-blue-600 flex items-center gap-1 hover:underline">
             כל ההוצאות <ArrowLeft size={14} />
           </button>
         </div>
-        <div className="space-y-3">
-          {topCats.map(([cat, amount]) => {
-            const pct = monthExpenses > 0 ? (amount / monthExpenses) * 100 : 0;
-            return (
-              <div key={cat}>
-                <div className="flex justify-between text-sm mb-1">
-                  <span className="text-slate-700">{cat}</span>
-                  <span className="font-medium text-slate-900">{fmtCurrency(amount)}</span>
-                </div>
-                <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+
+        {allCats.length === 0 ? (
+          <div className="text-center py-8 text-slate-400 text-sm">אין הוצאות החודש</div>
+        ) : (
+          <>
+            {/* Stacked unified bar */}
+            <div className="flex w-full h-7 rounded-xl overflow-hidden mb-5 gap-px">
+              {allCats.map(([cat, amount]) => {
+                const pct = monthExpenses > 0 ? (amount / monthExpenses) * 100 : 0;
+                const color = colorMap[cat] ?? '#9ca3af';
+                return (
                   <div
-                    className="h-full rounded-full transition-all duration-500"
-                    style={{ width: `${pct}%`, background: 'linear-gradient(90deg,#3b82f6,#6366f1)' }}
+                    key={cat}
+                    title={`${cat}: ${fmtCurrency(amount)} (${Math.round(pct)}%)`}
+                    className="h-full transition-all duration-700 cursor-default"
+                    style={{ width: `${pct}%`, backgroundColor: color, minWidth: pct > 1 ? undefined : 0 }}
                   />
-                </div>
-              </div>
-            );
-          })}
-        </div>
+                );
+              })}
+            </div>
+
+            {/* Category rows */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-2.5">
+              {allCats.map(([cat, amount]) => {
+                const pct = monthExpenses > 0 ? (amount / monthExpenses) * 100 : 0;
+                const color = colorMap[cat] ?? '#9ca3af';
+                return (
+                  <div key={cat} className="flex items-center gap-3 min-w-0">
+                    {/* Color dot */}
+                    <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                    {/* Category name */}
+                    <span className="text-sm text-slate-600 flex-1 truncate">{cat}</span>
+                    {/* Mini bar */}
+                    <div className="w-20 h-1.5 bg-slate-100 rounded-full overflow-hidden shrink-0">
+                      <div
+                        className="h-full rounded-full transition-all duration-700"
+                        style={{ width: `${pct}%`, backgroundColor: color }}
+                      />
+                    </div>
+                    {/* Percent */}
+                    <span className="text-xs text-slate-400 w-8 text-left shrink-0">{Math.round(pct)}%</span>
+                    {/* Amount */}
+                    <span className="text-sm font-semibold text-slate-900 w-24 text-left shrink-0">{fmtCurrency(amount)}</span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Total */}
+            <div className="mt-5 pt-4 border-t border-slate-100 flex justify-between items-center">
+              <span className="text-sm text-slate-500">{allCats.length} קטגוריות</span>
+              <span className="text-base font-bold text-slate-900">סה"כ {fmtCurrency(monthExpenses)}</span>
+            </div>
+          </>
+        )}
       </Card>
     </div>
   );

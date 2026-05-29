@@ -17,10 +17,10 @@ function monthsBetween(a: Date, b: Date) {
 
 /** Returns { current, total } for periodic charges, null for permanent. */
 function paymentProgress(r: RecurringCharge): { current: number; total: number } | null {
-  if ((r.chargeType ?? 'permanent') !== 'periodic' || !r.startDate || !r.endDate) return null;
-  const start = new Date(r.startDate);
-  const end   = new Date(r.endDate);
+  if ((r.chargeType ?? 'permanent') !== 'periodic' || !r.endDate) return null;
   const now   = new Date();
+  const start = r.startDate ? new Date(r.startDate) : new Date(now.getFullYear(), now.getMonth(), 1);
+  const end   = new Date(r.endDate);
   const total   = monthsBetween(start, end) + 1;
   const current = Math.min(total, Math.max(0, monthsBetween(start, now) + 1));
   return { current, total };
@@ -30,9 +30,9 @@ function paymentProgress(r: RecurringCharge): { current: number; total: number }
 interface Occurrence { key: string; year: number; month: number; isPast: boolean }
 
 function buildOccurrences(r: RecurringCharge): Occurrence[] {
-  if ((r.chargeType ?? 'permanent') !== 'periodic' || !r.startDate || !r.endDate) return [];
+  if ((r.chargeType ?? 'permanent') !== 'periodic' || !r.endDate) return [];
   const now   = new Date();
-  const start = new Date(r.startDate);
+  const start = r.startDate ? new Date(r.startDate) : new Date(now.getFullYear(), now.getMonth(), 1);
   const end   = new Date(r.endDate);
   const list: Occurrence[] = [];
   const cur = new Date(start.getFullYear(), start.getMonth(), 1);
@@ -153,9 +153,9 @@ export default function RecurringCharges() {
   const next7Total = next7.reduce((a, r) => a + r.amount, 0);
 
   // ── Render helpers ───────────────────────────────────────────────────
-  // Only block save when name/amount missing, or periodic without end date
+  // Permanent: name + amount. Periodic: also requires startDate + endDate.
   const isAddValid = !!(form.name && form.amount &&
-    (form.chargeType === 'permanent' || form.endDate));
+    (form.chargeType === 'permanent' || (form.startDate && form.endDate)));
 
   return (
     <div className="space-y-6">
@@ -488,7 +488,8 @@ function ChargeForm({ form, setForm, categoryList }: {
   form: FormState; setForm: (f: FormState) => void; categoryList: string[];
 }) {
   const isPeriodic = form.chargeType === 'periodic';
-  const endDateMissing = isPeriodic && !form.endDate;
+  const startDateMissing = isPeriodic && !form.startDate;
+  const endDateMissing   = isPeriodic && !form.endDate;
 
   return (
     <div className="space-y-4">
@@ -568,9 +569,23 @@ function ChargeForm({ form, setForm, categoryList }: {
       {/* ── Dates ────────────────────────────────────────────────────── */}
       <div className={`grid gap-3 ${isPeriodic ? 'grid-cols-2' : 'grid-cols-1'}`}>
         <div>
-          <label className="block text-sm font-medium text-slate-700 mb-1">תאריך התחלה</label>
-          <input type="date" value={form.startDate} onChange={e => setForm({...form, startDate: e.target.value})}
-            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:border-blue-300 focus:ring-2 focus:ring-blue-100" />
+          <label className="block text-sm font-medium text-slate-700 mb-1">
+            תאריך התחלה
+            {isPeriodic && <span className="text-red-500 mr-1">* חובה</span>}
+          </label>
+          <input
+            type="date"
+            value={form.startDate}
+            onChange={e => setForm({...form, startDate: e.target.value})}
+            className={`w-full rounded-lg px-3 py-2 text-sm focus:ring-2 ${
+              startDateMissing
+                ? 'border-2 border-red-400 bg-red-50 focus:border-red-400 focus:ring-red-100'
+                : 'border border-slate-200 focus:border-blue-300 focus:ring-blue-100'
+            }`}
+          />
+          {startDateMissing && (
+            <p className="text-xs text-red-500 mt-1">יש להגדיר תאריך התחלה לחיוב מחזורי</p>
+          )}
         </div>
 
         {isPeriodic && (
