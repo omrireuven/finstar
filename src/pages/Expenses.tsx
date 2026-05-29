@@ -5,7 +5,7 @@ import Card from '../components/common/Card';
 import Modal from '../components/common/Modal';
 import { fmtCurrency, fmtDate } from '../utils/format';
 import type { Transaction, Category } from '../types';
-import { parseCalVisa, parseIsracard, parseGenericCSV } from '../utils/parsers';
+import { parseCalVisa, parseIsracard, parseMax, parseGenericCSV } from '../utils/parsers';
 import { nanoid } from '../utils/nanoid';
 import * as XLSX from 'xlsx';
 
@@ -26,7 +26,7 @@ export default function Expenses() {
   const [editTxn, setEditTxn] = useState<Transaction | null>(null);
   const [importing, setImporting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-  const [importType, setImportType] = useState<'cal' | 'isracard' | 'generic'>('cal');
+  const [importType, setImportType] = useState<'cal' | 'isracard' | 'max' | 'generic'>('cal');
   const [importCard, setImportCard] = useState('ויזה כאל');
   const [rulesModal, setRulesModal] = useState(false);
   const [rulesTab, setRulesTab] = useState<'pending' | 'saved'>('pending');
@@ -116,6 +116,7 @@ export default function Expenses() {
       const results = await Promise.all(files.map((f) => {
         if (importType === 'cal') return parseCalVisa(f, importCard);
         if (importType === 'isracard') return parseIsracard(f, importCard);
+        if (importType === 'max') return parseMax(f, importCard);
         return parseGenericCSV(f, importCard);
       }));
       const allParsed = results.flat();
@@ -470,6 +471,7 @@ export default function Expenses() {
                   className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
                   <option value="cal">כאל ויזה (XLSX)</option>
                   <option value="isracard">ישראכרט מסטרקארד (XLSX)</option>
+                  <option value="max">מקס (XLSX)</option>
                   <option value="generic">CSV גנרי</option>
                 </select>
               </div>

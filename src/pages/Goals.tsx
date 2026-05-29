@@ -1,11 +1,10 @@
 import { useState } from 'react';
-import { Pencil, X, Plus, Tags } from 'lucide-react';
+import { Pencil, X, Plus, Tags, ChevronRight, ChevronLeft } from 'lucide-react';
 import { useStore, useCategoryList, useCategoryColorMap } from '../store';
 import Card from '../components/common/Card';
 import Modal from '../components/common/Modal';
 import { fmtCurrency, currentMonthKey, fmtMonthYear } from '../utils/format';
 import type { Category, CategoryDef } from '../types';
-import clsx from 'clsx';
 
 // ── Preset palette for color picker ──────────────────────────────────────────
 const PRESET_COLORS = [
@@ -68,11 +67,9 @@ function CategoryManagerModal({ open, onClose }: { open: boolean; onClose: () =>
 
   return (
     <Modal open={open} onClose={onClose} title="ניהול קטגוריות">
-      {/* Category list */}
       <div className="space-y-1.5 max-h-72 overflow-y-auto">
         {categories.map((cat) =>
           editId === cat.id ? (
-            /* Edit row */
             <div key={cat.id} className="border border-blue-200 rounded-xl p-3 space-y-3 bg-blue-50/30">
               <input
                 value={editName}
@@ -91,23 +88,17 @@ function CategoryManagerModal({ open, onClose }: { open: boolean; onClose: () =>
               </div>
             </div>
           ) : (
-            /* View row */
             <div key={cat.id} className="flex items-center gap-2 px-3 py-2 rounded-xl hover:bg-slate-50 group">
               <div className="w-4 h-4 rounded-full shrink-0 border border-white shadow-sm" style={{ backgroundColor: cat.color }} />
               <span className="flex-1 text-sm text-slate-800">{cat.name}</span>
               {cat.isBuiltIn && <span className="text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">מובנית</span>}
-              <button
-                onClick={() => startEdit(cat)}
-                className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-blue-500 p-1 transition-opacity"
-              >
+              <button onClick={() => startEdit(cat)} className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-blue-500 p-1 transition-opacity">
                 <Pencil size={12} />
               </button>
               {cat.name !== 'אחר' && (
-                <button
-                  onClick={() => removeCategory(cat.id)}
+                <button onClick={() => removeCategory(cat.id)}
                   className="opacity-0 group-hover:opacity-100 text-slate-400 hover:text-red-400 p-1 transition-opacity"
-                  title="מחק קטגוריה (עסקאות יועברו ל'אחר')"
-                >
+                  title="מחק קטגוריה (עסקאות יועברו ל'אחר')">
                   <X size={13} />
                 </button>
               )}
@@ -116,7 +107,6 @@ function CategoryManagerModal({ open, onClose }: { open: boolean; onClose: () =>
         )}
       </div>
 
-      {/* Add new */}
       <div className="border-t border-slate-100 pt-4 mt-4 space-y-3">
         <p className="text-sm font-semibold text-slate-700">הוסף קטגוריה חדשה</p>
         <input
@@ -138,26 +128,54 @@ function CategoryManagerModal({ open, onClose }: { open: boolean; onClose: () =>
   );
 }
 
-// ── Progress bar ──────────────────────────────────────────────────────────────
-function ProgressBar({ value, max }: { value: number; max: number }) {
-  const pct = max > 0 ? Math.min(100, (value / max) * 100) : 0;
-  const bgColor = pct >= 100 ? '#ef4444' : pct >= 70 ? '#f59e0b' : '#22c55e';
+// ── Inline editable amount ───────────────────────────────────────────────────
+function AmountCell({
+  value, placeholder, onSave, onCancel, isEditing, onStartEdit,
+}: {
+  value: number; placeholder: string; onSave: (v: number) => void;
+  onCancel: () => void; isEditing: boolean; onStartEdit: () => void;
+}) {
+  const [draft, setDraft] = useState(String(value || ''));
+
+  if (isEditing) {
+    return (
+      <input
+        autoFocus
+        type="number"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => { if (draft) onSave(+draft); else onCancel(); }}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { if (draft) onSave(+draft); else onCancel(); }
+          if (e.key === 'Escape') onCancel();
+        }}
+        placeholder={placeholder}
+        className="w-28 border border-blue-300 rounded-lg px-2 py-1 text-sm text-right outline-none focus:ring-2 focus:ring-blue-100"
+      />
+    );
+  }
+  if (value > 0) {
+    return (
+      <button onClick={onStartEdit} className="text-sm text-slate-500 hover:text-blue-500 transition-colors text-left">
+        {fmtCurrency(value)}
+      </button>
+    );
+  }
   return (
-    <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
-      <div className="h-full rounded-full transition-all" style={{ width: `${pct}%`, backgroundColor: bgColor }} />
-    </div>
+    <button onClick={onStartEdit} className="text-xs text-blue-500 hover:text-blue-600 hover:underline font-medium">
+      + הגדר יעד
+    </button>
   );
 }
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function Goals() {
-  const { transactions, goals, setGoal } = useStore();
+  const { transactions, goals, setGoal, deleteGoal } = useStore();
   const categoryList = useCategoryList();
   const catColors = useCategoryColorMap();
 
   const [month, setMonth] = useState(currentMonthKey());
   const [editing, setEditing] = useState<Category | null>(null);
-  const [editVal, setEditVal] = useState('');
   const [catModal, setCatModal] = useState(false);
 
   const [year, m] = month.split('-').map(Number);
@@ -169,9 +187,10 @@ export default function Goals() {
   }
 
   const totalBudget = goals.reduce((a, g) => a + g.targetAmount, 0);
-  const totalSpent = monthTxns.reduce((a, t) => a + t.amount, 0);
-  const overBudget = goals.filter((g) => (spentByCategory[g.category] || 0) > g.targetAmount).length;
-  const onTrack = goals.filter((g) => (spentByCategory[g.category] || 0) <= g.targetAmount).length;
+  const totalSpent  = monthTxns.reduce((a, t) => a + t.amount, 0);
+  const overBudget  = goals.filter((g) => (spentByCategory[g.category] || 0) > g.targetAmount).length;
+  const onTrack     = goals.filter((g) => (spentByCategory[g.category] || 0) <= g.targetAmount).length;
+  const budgetPct   = totalBudget > 0 ? Math.min(100, (totalSpent / totalBudget) * 100) : 0;
 
   function prevMonth() {
     const d = new Date(year, m - 2, 1);
@@ -198,104 +217,233 @@ export default function Goals() {
     }
   }
 
+  // Sort: categories with goals first (by % spent desc), then without goals
+  const catsWithGoals    = categoryList.filter((cat) => goals.some((g) => g.category === cat));
+  const catsWithoutGoals = categoryList.filter((cat) => !goals.some((g) => g.category === cat));
+
+  function renderRow(cat: string, hasGoal: boolean) {
+    const goal    = goals.find((g) => g.category === cat);
+    const spent   = spentByCategory[cat] || 0;
+    const target  = goal?.targetAmount ?? 0;
+    const pct     = target > 0 ? Math.min(100, (spent / target) * 100) : 0;
+    const isOver  = hasGoal && spent > target;
+    const color   = catColors[cat] ?? '#9ca3af';
+    const barColor = isOver ? '#ef4444' : pct >= 80 ? '#f59e0b' : color;
+
+    return (
+      <div
+        key={cat}
+        className={`flex items-center gap-3 px-5 py-3 group hover:bg-slate-50 transition-colors ${!hasGoal ? 'opacity-60' : ''}`}
+      >
+        {/* Color dot */}
+        <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+
+        {/* Category name */}
+        <span className="text-sm font-medium text-slate-800 w-32 truncate shrink-0">{cat}</span>
+
+        {/* Progress bar */}
+        <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+          {hasGoal && (
+            <div
+              className="h-full rounded-full transition-all duration-500"
+              style={{ width: `${pct}%`, backgroundColor: barColor }}
+            />
+          )}
+        </div>
+
+        {/* Spent amount */}
+        <span
+          className={`text-sm font-semibold w-20 text-left shrink-0 ${
+            isOver ? 'text-red-500' : hasGoal ? 'text-slate-800' : 'text-slate-400'
+          }`}
+        >
+          {spent > 0 ? fmtCurrency(spent) : '—'}
+        </span>
+
+        <span className="text-slate-200 shrink-0">/</span>
+
+        {/* Budget target (editable) */}
+        <div className="w-28 shrink-0">
+          <AmountCell
+            value={target}
+            placeholder="יעד"
+            isEditing={editing === cat}
+            onStartEdit={() => setEditing(cat as Category)}
+            onSave={(v) => { setGoal(cat as Category, v); setEditing(null); }}
+            onCancel={() => setEditing(null)}
+          />
+        </div>
+
+        {/* Status / remaining */}
+        <div className="w-28 text-left shrink-0">
+          {hasGoal && isOver ? (
+            <span className="text-xs bg-red-50 text-red-500 px-2 py-0.5 rounded-full font-medium">
+              +{fmtCurrency(spent - target)}
+            </span>
+          ) : hasGoal && target > 0 ? (
+            <span className="text-xs text-slate-400">
+              {Math.round(pct)}% · נותר {fmtCurrency(target - spent)}
+            </span>
+          ) : null}
+        </div>
+
+        {/* Delete goal button (hover) */}
+        <div className="w-5 shrink-0 flex justify-center">
+          {hasGoal && goal && (
+            <button
+              onClick={() => deleteGoal(goal.id)}
+              title="מחק יעד"
+              className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-400 transition-opacity"
+            >
+              <X size={13} />
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5">
+      {/* ── Header ──────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">יעדים ותקציב</h1>
-          <div className="flex items-center gap-3 mt-1">
-            <button onClick={prevMonth} className="text-slate-400 hover:text-slate-700 text-lg">›</button>
-            <span className="text-slate-600 font-medium">{fmtMonthYear(year, m)}</span>
-            <button onClick={nextMonth} className="text-slate-400 hover:text-slate-700 text-lg rotate-180">›</button>
+          <div className="flex items-center gap-2 mt-1">
+            <button onClick={prevMonth} className="p-1 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 transition-colors">
+              <ChevronRight size={18} />
+            </button>
+            <span className="text-slate-700 font-medium">{fmtMonthYear(year, m)}</span>
+            <button onClick={nextMonth} className="p-1 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 transition-colors">
+              <ChevronLeft size={18} />
+            </button>
           </div>
-          <p className="text-xs text-slate-400 mt-1">היעדים זהים לכל החודשים · הצג התקדמות לחודש הנבחר</p>
+          <p className="text-xs text-slate-400 mt-0.5">היעדים זהים לכל החודשים · הצג התקדמות לחודש הנבחר</p>
         </div>
-        <div className="flex gap-2">
-          <button onClick={() => setCatModal(true)} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 hover:bg-slate-50">
-            <Tags size={15} /> ניהול קטגוריות
-          </button>
-          <button onClick={suggestGoals} className="px-4 py-2 bg-purple-50 border border-purple-200 rounded-xl text-sm text-purple-700 hover:bg-purple-100">
-            ✨ הצע יעדים
-          </button>
-        </div>
+        <button
+          onClick={() => setCatModal(true)}
+          className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+        >
+          <Tags size={15} /> ניהול קטגוריות
+        </button>
       </div>
 
+      {/* ── KPI row ─────────────────────────────────────────────────────── */}
       <div className="grid grid-cols-4 gap-4">
         <Card>
-          <div className="text-sm text-slate-500">תקציב חודשי</div>
+          <div className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-1">תקציב חודשי</div>
           <div className="text-2xl font-bold text-slate-900">{fmtCurrency(totalBudget)}</div>
+          <div className="text-xs text-slate-400 mt-0.5">{goals.length} קטגוריות</div>
         </Card>
         <Card>
-          <div className="text-sm text-slate-500">הוצאות בפועל</div>
-          <div className={`text-2xl font-bold ${totalSpent > totalBudget ? 'text-red-500' : 'text-slate-900'}`}>{fmtCurrency(totalSpent)}</div>
+          <div className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-1">הוצאות בפועל</div>
+          <div className={`text-2xl font-bold ${totalSpent > totalBudget ? 'text-red-500' : 'text-slate-900'}`}>
+            {fmtCurrency(totalSpent)}
+          </div>
+          <div className="text-xs text-slate-400 mt-0.5">{fmtMonthYear(year, m)}</div>
         </Card>
         <Card>
-          <div className="text-sm text-slate-500">יעדים בסדר</div>
+          <div className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-1">יעדים בסדר</div>
           <div className="text-2xl font-bold text-green-600">{onTrack}</div>
+          <div className="text-xs text-slate-400 mt-0.5">מתוך {goals.length}</div>
         </Card>
         <Card>
-          <div className="text-sm text-slate-500">חריגות</div>
-          <div className={`text-2xl font-bold ${overBudget > 0 ? 'text-red-500' : 'text-slate-900'}`}>{overBudget}</div>
+          <div className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-1">חריגות</div>
+          <div className={`text-2xl font-bold ${overBudget > 0 ? 'text-red-500' : 'text-slate-900'}`}>
+            {overBudget}
+          </div>
+          <div className="text-xs text-slate-400 mt-0.5">קטגוריות שחרגו</div>
         </Card>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {categoryList.map((cat) => {
-          const goal = goals.find((g) => g.category === cat);
-          const spent = spentByCategory[cat] || 0;
-          const target = goal?.targetAmount ?? 0;
-          const pct = target > 0 ? Math.min(100, (spent / target) * 100) : 0;
-          const isOver = target > 0 && spent > target;
-          const isEditing = editing === cat;
+      {/* ── Budget overview bar ──────────────────────────────────────────── */}
+      {totalBudget > 0 && (
+        <Card>
+          <div className="flex items-center justify-between text-sm mb-3">
+            <span className="font-medium text-slate-700">ניצול תקציב כולל</span>
+            <span className={`font-bold ${totalSpent > totalBudget ? 'text-red-500' : 'text-slate-700'}`}>
+              {fmtCurrency(totalSpent)} / {fmtCurrency(totalBudget)}
+            </span>
+          </div>
+          <div className="h-3 bg-slate-100 rounded-full overflow-hidden">
+            <div
+              className="h-full rounded-full transition-all duration-700"
+              style={{
+                width: `${budgetPct}%`,
+                background: totalSpent > totalBudget
+                  ? '#ef4444'
+                  : budgetPct > 80
+                  ? '#f59e0b'
+                  : '#22c55e',
+              }}
+            />
+          </div>
+          <div className="flex items-center justify-between text-xs mt-2">
+            <span className="text-slate-400">{Math.round(budgetPct)}% נוצל</span>
+            <span className={`font-medium ${totalSpent > totalBudget ? 'text-red-500' : 'text-green-600'}`}>
+              {totalSpent > totalBudget
+                ? `חריגה של ${fmtCurrency(totalSpent - totalBudget)}`
+                : `נותר ${fmtCurrency(totalBudget - totalSpent)}`}
+            </span>
+          </div>
+        </Card>
+      )}
 
-          return (
-            <Card key={cat} className="gap-3 flex flex-col">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 rounded-full" style={{ backgroundColor: catColors[cat] ?? '#9ca3af' }} />
-                  <span className="font-medium text-slate-900">{cat}</span>
-                  {isOver && <span className="text-xs text-red-500 font-medium">חריגה!</span>}
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className={`text-sm font-semibold ${isOver ? 'text-red-500' : 'text-slate-700'}`}>{fmtCurrency(spent)}</span>
-                  <span className="text-slate-400 text-sm">/</span>
-                  {isEditing ? (
-                    <input
-                      autoFocus
-                      type="number"
-                      value={editVal}
-                      onChange={(e) => setEditVal(e.target.value)}
-                      onBlur={() => { if (editVal) setGoal(cat, +editVal); setEditing(null); }}
-                      onKeyDown={(e) => { if (e.key === 'Enter') { if (editVal) setGoal(cat, +editVal); setEditing(null); } if (e.key === 'Escape') setEditing(null); }}
-                      className="w-24 border border-blue-300 rounded px-2 py-0.5 text-sm text-right outline-none"
-                    />
-                  ) : (
-                    <button
-                      onClick={() => { setEditing(cat); setEditVal(String(target || '')); }}
-                      className={clsx('text-sm hover:underline', target ? 'text-slate-500' : 'text-blue-500')}
-                    >
-                      {target ? fmtCurrency(target) : '+ הגדר יעד'}
-                    </button>
-                  )}
-                </div>
+      {/* ── Category list ────────────────────────────────────────────────── */}
+      <Card className="p-0 overflow-hidden">
+        {/* Card header */}
+        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+          <h2 className="font-semibold text-slate-900">יעדים לפי קטגוריה</h2>
+          <button
+            onClick={suggestGoals}
+            className="flex items-center gap-1.5 text-xs text-purple-600 bg-purple-50 border border-purple-100 px-3 py-1.5 rounded-lg hover:bg-purple-100 transition-colors font-medium"
+          >
+            ✨ הצע יעדים מהיסטוריה
+          </button>
+        </div>
+
+        {/* Column headers */}
+        <div className="flex items-center gap-3 px-5 py-2 bg-slate-50 border-b border-slate-100 text-xs text-slate-400 font-medium uppercase tracking-wide">
+          <div className="w-2.5 shrink-0" />
+          <div className="w-32 shrink-0">קטגוריה</div>
+          <div className="flex-1">התקדמות</div>
+          <div className="w-20 text-left shrink-0">הוצאות</div>
+          <div className="w-4 shrink-0" />
+          <div className="w-28 shrink-0">יעד חודשי</div>
+          <div className="w-28 text-left shrink-0">מצב</div>
+          <div className="w-5 shrink-0" />
+        </div>
+
+        {/* Categories with goals */}
+        {catsWithGoals.length > 0 && (
+          <div className="divide-y divide-slate-50">
+            {catsWithGoals.map((cat) => renderRow(cat, true))}
+          </div>
+        )}
+
+        {/* Categories without goals */}
+        {catsWithoutGoals.length > 0 && (
+          <div className={catsWithGoals.length > 0 ? 'border-t-2 border-dashed border-slate-100' : ''}>
+            {catsWithGoals.length > 0 && (
+              <div className="px-5 pt-3 pb-1">
+                <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-widest">
+                  ללא יעד מוגדר
+                </span>
               </div>
-              {target > 0 && (
-                <>
-                  <ProgressBar value={spent} max={target} />
-                  <div className="flex justify-between text-xs text-slate-400">
-                    <span>{Math.round(pct)}% מהיעד</span>
-                    {isOver ? (
-                      <span className="text-red-500">חריגה של {fmtCurrency(spent - target)}</span>
-                    ) : (
-                      <span className="text-green-600">נותר {fmtCurrency(target - spent)}</span>
-                    )}
-                  </div>
-                </>
-              )}
-            </Card>
-          );
-        })}
-      </div>
+            )}
+            <div className="divide-y divide-slate-50 pb-2">
+              {catsWithoutGoals.map((cat) => renderRow(cat, false))}
+            </div>
+          </div>
+        )}
+
+        {/* Empty state */}
+        {categoryList.length === 0 && (
+          <div className="py-16 text-center text-slate-400 text-sm">
+            אין קטגוריות להצגה
+          </div>
+        )}
+      </Card>
 
       <CategoryManagerModal open={catModal} onClose={() => setCatModal(false)} />
     </div>
