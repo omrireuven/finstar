@@ -67,7 +67,7 @@ export default function Savings() {
   const [tab, setTab] = useState<Tab>('savings');
 
   // ── Savings state ────────────────────────────────────────────────────────
-  const SAVINGS_BLANK = { bank: BANKS[0], name: '', amount: '', interestRate: '', maturityDate: '', openDate: new Date().toISOString().slice(0, 10) };
+  const SAVINGS_BLANK = { bank: BANKS[0], name: '', amount: '', interestRate: '', maturityDate: '', openDate: new Date().toISOString().slice(0, 10), link: '' };
   const [savingsAddModal, setSavingsAddModal] = useState(false);
   const [savingsEditItem, setSavingsEditItem] = useState<SavingsAccount | null>(null);
   const [savingsForm, setSavingsForm] = useState(SAVINGS_BLANK);
@@ -103,15 +103,15 @@ export default function Savings() {
   }
   function openSavingsEdit(s: SavingsAccount) {
     setSavingsEditItem(s);
-    setSavingsForm({ bank: s.bank, name: s.name, amount: String(s.amount), interestRate: String(s.interestRate), maturityDate: s.maturityDate, openDate: s.openDate });
+    setSavingsForm({ bank: s.bank, name: s.name, amount: String(s.amount), interestRate: String(s.interestRate), maturityDate: s.maturityDate, openDate: s.openDate, link: s.link ?? '' });
   }
   function saveSavingsEdit() {
     if (!savingsEditItem) return;
-    updateSavings(savingsEditItem.id, { bank: savingsForm.bank, name: savingsForm.name, amount: +savingsForm.amount, interestRate: +savingsForm.interestRate, maturityDate: savingsForm.maturityDate, openDate: savingsForm.openDate });
+    updateSavings(savingsEditItem.id, { bank: savingsForm.bank, name: savingsForm.name, amount: +savingsForm.amount, interestRate: +savingsForm.interestRate, maturityDate: savingsForm.maturityDate, openDate: savingsForm.openDate, link: savingsForm.link || undefined });
     setSavingsEditItem(null);
   }
   function addSavingsAccount() {
-    addSavings({ bank: savingsForm.bank, name: savingsForm.name, amount: +savingsForm.amount, interestRate: +savingsForm.interestRate, maturityDate: savingsForm.maturityDate, openDate: savingsForm.openDate, open: true });
+    addSavings({ bank: savingsForm.bank, name: savingsForm.name, amount: +savingsForm.amount, interestRate: +savingsForm.interestRate, maturityDate: savingsForm.maturityDate, openDate: savingsForm.openDate, open: true, link: savingsForm.link || undefined });
     setSavingsAddModal(false);
     setSavingsForm(SAVINGS_BLANK);
   }
@@ -292,7 +292,13 @@ export default function Savings() {
                   <div><div className="text-slate-400">תאריך פתיחה</div><div className="font-medium text-slate-700">{fmtDate(s.openDate)}</div></div>
                   <div><div className="text-slate-400">תאריך פירעון</div><div className="font-medium text-slate-700">{fmtDate(s.maturityDate)}</div></div>
                   <div><div className="text-slate-400">ריבית שנצברה</div><div className="font-medium text-green-600">{fmtCurrency(accrued)}</div></div>
-                  <div className="flex gap-2 flex-wrap">
+                  <div className="flex gap-2 flex-wrap items-center">
+                    {s.link && (
+                      <a href={s.link} target="_blank" rel="noopener noreferrer"
+                        className="text-xs px-3 py-1.5 border border-blue-200 text-blue-600 rounded-lg hover:bg-blue-50 flex items-center gap-1">
+                        <ExternalLink size={11} /> פירוט
+                      </a>
+                    )}
                     <button onClick={() => openSavingsEdit(s)} className="text-xs px-3 py-1.5 border border-slate-200 rounded-lg hover:bg-slate-50 flex items-center gap-1">
                       <Pencil size={11} /> ערוך
                     </button>
@@ -609,6 +615,12 @@ function SavingsForm({ form, setForm, banks }: { form: any; setForm: (f: any) =>
             className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
         </div>
       ))}
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-1">קישור לפירוט חיצוני</label>
+        <input type="url" value={form.link} onChange={(e) => setForm({ ...form, link: e.target.value })}
+          placeholder="https://..."
+          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" dir="ltr" />
+      </div>
     </div>
   );
 }

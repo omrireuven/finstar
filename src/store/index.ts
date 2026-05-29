@@ -278,6 +278,94 @@ export function useCategoryColorMap(): Record<string, string> {
   );
 }
 
+// ── All-transactions selector (real + virtual from recurring charges) ─────────
+
+/** Generate all YYYY-MM strings from `from` to `to` (inclusive). */
+function genMonths(fromYYYYMM: string, toYYYYMM: string): string[] {
+  const result: string[] = [];
+  let [y, m] = fromYYYYMM.split('-').map(Number);
+  const [ey, em] = toYYYYMM.split('-').map(Number);
+  while (y < ey || (y === ey && m <= em)) {
+    result.push(`${y}-${String(m).padStart(2, '0')}`);
+    if (++m > 12) { m = 1; y++; }
+  }
+  return result;
+}
+
+/**
+ * Returns real transactions merged with virtual ones synthesised from active
+ * recurring charges.  A virtual entry is suppressed for a given month when a
+ * real transaction already has `recurringId` pointing to that charge
+ * (i.e. the user already linked or confirmed the occurrence).
+ */
+export function useAllTransactions(): Transaction[] {
+  const transactions = useStore((s) => s.transactions);
+  const recurring    = useStore((s) => s.recurring);
+
+  return useMemo(() => {
+    const today  = new Date();
+    const nowKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+
+    // (recurringId|monthKey) pairs already covered by a linked real transaction
+    const covered = new Set<string>();
+    for (const t of transactions) {
+      if (t.recurringId) covered.add(`${t.recurringId}|${t.date.slice(0, 7)}`);
+    }
+
+    const virtual: Transaction[] = [];
+
+    for (const rec of recurring) {
+      if (!rec.active) continue;
+
+      // Start month — if no startDate, only generate for the current month
+      const startKey = rec.startDate ? rec.startDate.slice(0, 7) : nowKey;
+
+      // End month
+      const endKey = (rec.chargeType === 'periodic' && rec.endDate)
+        ? rec.endDate.slice(0, 7)
+        : nowKey;
+
+      for (const mk of genMonths(startKey, endKey)) {
+        // Already handled by a real linked transaction
+        if (covered.has(`${rec.id}|${mk}`)) continue;
+        // Occurrence override explicitly tied to a real transaction
+        if (rec.occurrenceOverrides?.[mk]?.transactionId) continue;
+        // User explicitly dismissed this occurrence
+        if (rec.occurrenceOverrides?.[mk]?.dismissed) continue;
+
+        const override  = rec.occurrenceOverrides?.[mk];
+        const [my, mm]  = mk.split('-').map(Number);
+        const maxDay    = new Date(my, mm, 0).getDate();
+        const day       = Math.min(rec.dayOfMonth, maxDay);
+        const date      = `${mk}-${String(day).padStart(2, '0')}`;
+
+        // Only show once the charge date has arrived (today counts as passed)
+        if (new Date(date + 'T23:59:59') > today) continue;
+
+        const amount    = override?.amount ?? rec.amount;
+
+        virtual.push({
+          id:            `virt-${rec.id}-${mk}`,
+          date,
+          business:      rec.name,
+          amount,
+          currency:      'ILS',
+          category:      rec.category,
+          isRecurring:   true,
+          source:        rec.card,
+          notes:         override?.note ?? '',
+          pending:       false,
+          aiCategorized: false,
+          recurringId:   rec.id,
+          isVirtual:     true,
+        });
+      }
+    }
+
+    return [...transactions, ...virtual];
+  }, [transactions, recurring]);
+}
+
 // ── Portfolio selector ────────────────────────────────────────────────────────
 
 // Selectors — use primitive subscriptions + useMemo to avoid getSnapshot loop

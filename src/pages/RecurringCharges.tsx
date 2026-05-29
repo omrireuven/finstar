@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Plus, ExternalLink, Power, Pencil, ChevronDown, ChevronUp, Link2, Trash2, Repeat, CalendarRange } from 'lucide-react';
+import { Plus, ExternalLink, Power, Pencil, ChevronDown, ChevronUp, Link2, Trash2, Repeat, CalendarRange, RotateCcw } from 'lucide-react';
 import { useStore, useCategoryList } from '../store';
 import Card from '../components/common/Card';
 import Modal from '../components/common/Modal';
@@ -27,7 +27,7 @@ function paymentProgress(r: RecurringCharge): { current: number; total: number }
 }
 
 /** Build a list of occurrence months for periodic charges only. */
-interface Occurrence { key: string; year: number; month: number; isPast: boolean }
+interface Occurrence { key: string; year: number; month: number; isPast: boolean; isDismissed: boolean }
 
 function buildOccurrences(r: RecurringCharge): Occurrence[] {
   if ((r.chargeType ?? 'permanent') !== 'periodic' || !r.endDate) return [];
@@ -39,10 +39,14 @@ function buildOccurrences(r: RecurringCharge): Occurrence[] {
   while (cur <= end) {
     const y = cur.getFullYear(), m = cur.getMonth() + 1;
     const key = `${y}-${String(m).padStart(2, '0')}`;
-    list.push({ key, year: y, month: m, isPast: new Date(y, m - 1, r.dayOfMonth) < now });
+    list.push({
+      key, year: y, month: m,
+      isPast: new Date(y, m - 1, r.dayOfMonth) < now,
+      isDismissed: !!(r.occurrenceOverrides?.[key]?.dismissed),
+    });
     cur.setMonth(cur.getMonth() + 1);
   }
-  return list.reverse();
+  return list;
 }
 
 // ── Blank form ────────────────────────────────────────────────────────────
@@ -142,11 +146,18 @@ export default function RecurringCharges() {
     setRecurringOccurrence(rid, key, null);
   }
 
+  function restoreOccurrence(rid: string, key: string) {
+    const ov = recurring.find(r => r.id === rid)?.occurrenceOverrides?.[key];
+    if (!ov?.dismissed) return;
+    const hasOtherData = ov.amount !== undefined || !!ov.note || !!ov.transactionId;
+    setRecurringOccurrence(rid, key, hasOtherData ? { dismissed: undefined } : null);
+  }
+
   // ── Aggregates ───────────────────────────────────────────────────────
   const now       = new Date();
   const today     = now.getDate();
   // Sort descending by dayOfMonth (charges near end of month appear first)
-  const sortByDay = (a: RecurringCharge, b: RecurringCharge) => b.dayOfMonth - a.dayOfMonth;
+  const sortByDay = (a: RecurringCharge, b: RecurringCharge) => a.dayOfMonth - b.dayOfMonth;
   const permanent = recurring.filter(r => (r.chargeType ?? 'permanent') === 'permanent').sort(sortByDay);
   const periodic  = recurring.filter(r => r.chargeType === 'periodic').sort(sortByDay);
   const active    = recurring.filter(r => r.active && !(r.endDate && new Date(r.endDate) < now));
@@ -220,7 +231,8 @@ export default function RecurringCharges() {
             <span className="text-xs text-slate-400">(ללא תאריך סיום)</span>
           </div>
           {permanent.map(r => (
-            <PermanentRow key={r.id} r={r} onEdit={openEdit} onToggle={() => toggleRecurring(r.id)} onDelete={() => deleteRecurring(r.id)} />
+            <PermanentRow key={r.id} r={r} onEdit={openEdit} onToggle={() => toggleRecurring(r.id)} onDelete={() => deleteRecurring(r.id)}
+              onRestoreOccurrence={(key) => restoreOccurrence(r.id, key)} />
           ))}
         </div>
       )}
@@ -315,6 +327,28 @@ export default function RecurringCharges() {
                         const actualAmount = ov?.amount ?? r.amount;
                         const isDiff = ov?.amount && ov.amount !== r.amount;
 
+                        if (occ.isDismissed) {
+                          return (
+                            <div key={occ.key} className="flex items-center gap-4 px-5 py-3 text-sm opacity-50">
+                              <div className="w-28 shrink-0">
+                                <div className="font-medium text-slate-400 line-through">{MONTHS_HE[occ.month - 1]} {occ.year}</div>
+                                <div className="text-xs text-slate-400">יום {r.dayOfMonth}</div>
+                              </div>
+                              <div className="flex-1" />
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className="text-xs bg-slate-100 text-slate-400 border border-slate-200 px-2 py-0.5 rounded-full">מדולג</span>
+                                <button
+                                  onClick={() => restoreOccurrence(r.id, occ.key)}
+                                  title="שחזר תשלום זה"
+                                  className="p-1.5 rounded-lg border border-violet-200 text-violet-500 hover:bg-violet-50"
+                                >
+                                  <RotateCcw size={11} />
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        }
+
                         return (
                           <div key={occ.key} className="flex items-center gap-4 px-5 py-3 hover:bg-slate-50/80 text-sm">
                             <div className="w-28 shrink-0">
@@ -351,7 +385,7 @@ export default function RecurringCharges() {
                               <button onClick={() => openOccEdit(r.id, occ.key)} className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-100">
                                 <Pencil size={11} />
                               </button>
-                              {ov && (
+                              {ov && !ov.dismissed && (
                                 <button onClick={() => clearOcc(r.id, occ.key)} className="p-1.5 rounded-lg border border-red-100 text-red-300 hover:bg-red-50">
                                   <Trash2 size={11} />
                                 </button>
@@ -441,46 +475,97 @@ export default function RecurringCharges() {
   );
 }
 
-// ── Permanent row (no expansion) ──────────────────────────────────────────
-function PermanentRow({ r, onEdit, onToggle, onDelete }: {
+// ── Permanent row (expandable when dismissed occurrences exist) ───────────
+function PermanentRow({ r, onEdit, onToggle, onDelete, onRestoreOccurrence }: {
   r: RecurringCharge;
   onEdit: (r: RecurringCharge) => void;
   onToggle: () => void;
   onDelete: () => void;
+  onRestoreOccurrence: (key: string) => void;
 }) {
+  const [expanded, setExpanded] = useState(false);
   const isExpired = r.endDate && new Date(r.endDate) < new Date();
+
+  const dismissed = Object.entries(r.occurrenceOverrides ?? {})
+    .filter(([, ov]) => ov.dismissed)
+    .map(([key]) => { const [y, m] = key.split('-').map(Number); return { key, year: y, month: m }; })
+    .sort((a, b) => a.key.localeCompare(b.key));
+
   return (
-    <Card className="flex items-center gap-3 px-5 py-4">
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="font-semibold text-slate-900">{r.name}</span>
-          <Badge variant={r.active && !isExpired ? 'green' : 'gray'}>
-            {r.active ? 'פעיל' : 'מושהה'}
-          </Badge>
+    <Card className="p-0 overflow-hidden">
+      <div className="flex items-center gap-3 px-5 py-4">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-semibold text-slate-900">{r.name}</span>
+            <Badge variant={r.active && !isExpired ? 'green' : 'gray'}>
+              {r.active ? 'פעיל' : 'מושהה'}
+            </Badge>
+            {dismissed.length > 0 && (
+              <span className="text-[10px] bg-slate-100 text-slate-500 border border-slate-200 px-1.5 py-0.5 rounded-full">
+                {dismissed.length} מדולגים
+              </span>
+            )}
+          </div>
+          <div className="text-xs text-slate-400 mt-0.5">
+            {r.category} • כרטיס: {r.card} • יום {r.dayOfMonth} לחודש
+            {r.startDate && <span className="mr-2">| מ-{r.startDate.slice(0,7)}</span>}
+            {r.cancelUrl && (
+              <a href={r.cancelUrl} target="_blank" rel="noopener noreferrer"
+                className="text-blue-400 hover:text-blue-600 mr-2 inline-flex items-center gap-0.5">
+                <ExternalLink size={10} /> ביטול
+              </a>
+            )}
+          </div>
         </div>
-        <div className="text-xs text-slate-400 mt-0.5">
-          {r.category} • כרטיס: {r.card} • יום {r.dayOfMonth} לחודש
-          {r.startDate && <span className="mr-2">| מ-{r.startDate.slice(0,7)}</span>}
-          {r.cancelUrl && (
-            <a href={r.cancelUrl} target="_blank" rel="noopener noreferrer"
-              className="text-blue-400 hover:text-blue-600 mr-2 inline-flex items-center gap-0.5">
-              <ExternalLink size={10} /> ביטול
-            </a>
+        <div className="text-lg font-bold text-slate-900 shrink-0">{fmtCurrency(r.amount)}</div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button onClick={() => onEdit(r)} className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-50">
+            <Pencil size={13} />
+          </button>
+          <button onClick={onToggle} className={`p-1.5 rounded-lg border transition-colors ${r.active ? 'border-green-200 text-green-600 hover:bg-green-50' : 'border-slate-200 text-slate-400 hover:bg-slate-50'}`}>
+            <Power size={13} />
+          </button>
+          <button onClick={onDelete} className="p-1.5 rounded-lg border border-red-100 text-red-400 hover:bg-red-50">
+            <Trash2 size={13} />
+          </button>
+          {dismissed.length > 0 && (
+            <button onClick={() => setExpanded(v => !v)} className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-50">
+              {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+            </button>
           )}
         </div>
       </div>
-      <div className="text-lg font-bold text-slate-900 shrink-0">{fmtCurrency(r.amount)}</div>
-      <div className="flex items-center gap-1.5 shrink-0">
-        <button onClick={() => onEdit(r)} className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-50">
-          <Pencil size={13} />
-        </button>
-        <button onClick={onToggle} className={`p-1.5 rounded-lg border transition-colors ${r.active ? 'border-green-200 text-green-600 hover:bg-green-50' : 'border-slate-200 text-slate-400 hover:bg-slate-50'}`}>
-          <Power size={13} />
-        </button>
-        <button onClick={onDelete} className="p-1.5 rounded-lg border border-red-100 text-red-400 hover:bg-red-50">
-          <Trash2 size={13} />
-        </button>
-      </div>
+
+      {/* Dismissed occurrences list */}
+      {expanded && dismissed.length > 0 && (
+        <div className="border-t border-slate-100 animate-slide-down">
+          <div className="px-5 py-2 bg-slate-50 flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">תשלומים שדולגו</span>
+            <span className="text-xs text-slate-400">{dismissed.length} תשלומים</span>
+          </div>
+          <div className="divide-y divide-slate-50">
+            {dismissed.map(d => (
+              <div key={d.key} className="flex items-center gap-4 px-5 py-3 text-sm opacity-60">
+                <div className="w-28 shrink-0">
+                  <div className="font-medium text-slate-400 line-through">{MONTHS_HE[d.month - 1]} {d.year}</div>
+                  <div className="text-xs text-slate-400">יום {r.dayOfMonth}</div>
+                </div>
+                <div className="flex-1" />
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-xs bg-slate-100 text-slate-400 border border-slate-200 px-2 py-0.5 rounded-full">מדולג</span>
+                  <button
+                    onClick={() => onRestoreOccurrence(d.key)}
+                    title="שחזר תשלום זה"
+                    className="p-1.5 rounded-lg border border-violet-200 text-violet-500 hover:bg-violet-50"
+                  >
+                    <RotateCcw size={11} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </Card>
   );
 }

@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from 'react';
-import { Upload, Plus, Search, Download, Lightbulb, X, Pencil, Link2, Trash2, CheckCircle2, CheckCheck } from 'lucide-react';
-import { useStore, useCategoryList, useCategoryColorMap } from '../store';
+import { useState, useRef, useEffect, useMemo } from 'react';
+import { Upload, Plus, Search, Download, Lightbulb, X, Pencil, Link2, Trash2, CheckCircle2, CheckCheck, Repeat2, Check, Star, RotateCcw } from 'lucide-react';
+import { useStore, useCategoryList, useCategoryColorMap, useAllTransactions } from '../store';
 import Card from '../components/common/Card';
 import Modal from '../components/common/Modal';
 import { fmtCurrency, fmtDate } from '../utils/format';
@@ -14,12 +14,16 @@ const PAGE_SIZE = 20;
 export default function Expenses() {
   const { transactions, recurring, categoryRules, addTransactions, overrideCategory,
           deleteTransaction, updateTransaction, setCategoryRule, deleteCategoryRule } = useStore();
+  const allTransactions = useAllTransactions();
   const categoryList = useCategoryList();
   const catColors = useCategoryColorMap();
 
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState<Category | 'הכל'>('הכל');
   const [monthFilter, setMonthFilter] = useState('');
+  const [pendingFilter, setPendingFilter] = useState(false);
+  const [linkedFilter, setLinkedFilter] = useState(false);
+  const [dupeModal, setDupeModal] = useState(false);
   const [page, setPage] = useState(1);
   const [importModal, setImportModal] = useState(false);
   const [addModal, setAddModal] = useState(false);
@@ -32,8 +36,13 @@ export default function Expenses() {
   const [rulesTab, setRulesTab] = useState<'pending' | 'saved'>('pending');
   const [draftCats, setDraftCats] = useState<Record<string, Category>>({});
 
-  // Inline recurring link popover
+  // Inline recurring link popover (real transactions)
   const [linkingTxnId, setLinkingTxnId] = useState<string | null>(null);
+  // Inline "link to existing transaction" popover (virtual transactions)
+  const [linkingVirtTxnId, setLinkingVirtTxnId] = useState<string | null>(null);
+  // Inline "refresh/validate occurrence amount" popover (virtual transactions)
+  const [refreshVirtId, setRefreshVirtId] = useState<string | null>(null);
+  const [refreshAmt, setRefreshAmt] = useState('');
 
   // Import dedup preview
   type DupResult = { fresh: Transaction[]; dupes: number; total: number; allDupes: boolean };
@@ -59,9 +68,10 @@ export default function Expenses() {
   const [form, setForm] = useState(BLANK_FORM);
   const [editForm, setEditForm] = useState(BLANK_FORM);
 
-  const months = [...new Set(transactions.map((t) => t.date.slice(0, 7)))].sort().reverse();
+  const months = [...new Set(allTransactions.map((t) => t.date.slice(0, 7)))].sort().reverse();
 
   // All unique business names with NO rule at all (neither auto-category nor __manual__)
+  // Virtual transactions are excluded — their names are user-defined recurring charge names.
   const pendingBusinesses = (() => {
     const map: Record<string, { currentCategory: Category; count: number }> = {};
     for (const t of transactions) {
@@ -76,8 +86,38 @@ export default function Expenses() {
   const savedRules   = Object.entries(categoryRules).filter(([, v]) => v !== '__manual__');
   const manualRules  = Object.entries(categoryRules).filter(([, v]) => v === '__manual__');
 
-  const filtered = transactions
+  const pendingCount = allTransactions.filter((t) => t.isVirtual).length;
+  const linkedCount  = allTransactions.filter((t) => !!t.recurringId && !t.isVirtual).length;
+
+  // Detect potential duplicate transactions: same business + same amount + ≤3 days apart
+  const potentialDupes = useMemo(() => {
+    const real = transactions.filter((t) => !t.isVirtual);
+    const pairs: { a: Transaction; b: Transaction; reason: string }[] = [];
+    const seen = new Set<string>();
+    for (let i = 0; i < real.length; i++) {
+      for (let j = i + 1; j < real.length; j++) {
+        const a = real[i], b = real[j];
+        if (a.business !== b.business || a.amount !== b.amount) continue;
+        const diff = Math.abs(
+          new Date(a.date + 'T00:00:00').getTime() - new Date(b.date + 'T00:00:00').getTime()
+        ) / 86400_000;
+        if (diff > 3) continue;
+        const key = [a.id, b.id].sort().join('|');
+        if (seen.has(key)) continue;
+        seen.add(key);
+        pairs.push({
+          a, b,
+          reason: diff === 0 ? 'תאריך + עסק + סכום זהים' : `הפרש ${Math.round(diff)} ימים — עסק וסכום זהים`,
+        });
+      }
+    }
+    return pairs;
+  }, [transactions]);
+
+  const filtered = allTransactions
     .filter((t) => {
+      if (pendingFilter && !t.isVirtual) return false;
+      if (linkedFilter && (!t.recurringId || t.isVirtual)) return false;
       if (search && !t.business.toLowerCase().includes(search.toLowerCase()) && !t.category.includes(search)) return false;
       if (catFilter !== 'הכל' && t.category !== catFilter) return false;
       if (monthFilter && !t.date.startsWith(monthFilter)) return false;
@@ -183,6 +223,41 @@ export default function Expenses() {
     }
   }
 
+  /** Link a virtual recurring occurrence to an already-imported real transaction. */
+  function linkVirtToExisting(virt: Transaction, real: Transaction) {
+    const state    = useStore.getState();
+    const monthKey = virt.date.slice(0, 7);
+    state.updateTransaction(real.id, { recurringId: virt.recurringId, isRecurring: true });
+    if (virt.recurringId) {
+      state.setRecurringOccurrence(virt.recurringId, monthKey, { transactionId: real.id });
+    }
+  }
+
+  /** Dismiss a virtual recurring occurrence — stores dismissed:true so it won't reappear. */
+  function dismissVirtual(t: Transaction) {
+    if (!t.recurringId) return;
+    useStore.getState().setRecurringOccurrence(t.recurringId, t.date.slice(0, 7), { dismissed: true });
+  }
+
+  /** Confirm a virtual recurring transaction as an actual payment. */
+  function confirmVirtual(t: Transaction) {
+    const state   = useStore.getState();
+    const monthKey = t.date.slice(0, 7);
+    // Check if a real transaction already matches (e.g. imported before confirming)
+    const existing = state.transactions.find(
+      (x) => !x.isVirtual && x.date === t.date && x.business === t.business && x.amount === t.amount,
+    );
+    if (existing) {
+      // Link that existing transaction to the recurring charge
+      state.updateTransaction(existing.id, { recurringId: t.recurringId, isRecurring: true });
+      if (t.recurringId) state.setRecurringOccurrence(t.recurringId, monthKey, { transactionId: existing.id });
+    } else {
+      const realId = nanoid();
+      state.addTransactions([{ ...t, id: realId, isVirtual: false }]);
+      if (t.recurringId) state.setRecurringOccurrence(t.recurringId, monthKey, { transactionId: realId });
+    }
+  }
+
   function exportExcel() {
     const data = filtered.map((t) => ({
       תאריך: fmtDate(t.date), עסק: t.business, סכום: t.amount, מטבע: t.currency,
@@ -206,7 +281,7 @@ export default function Expenses() {
   }
 
   return (
-    <div className="space-y-5" onClick={() => setLinkingTxnId(null)}>
+    <div className="space-y-5" onClick={() => { setLinkingTxnId(null); setLinkingVirtTxnId(null); setRefreshVirtId(null); }}>
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">הוצאות וחיובים</h1>
@@ -223,6 +298,19 @@ export default function Expenses() {
             {pendingBusinesses.length > 0 && (
               <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center px-1">
                 {pendingBusinesses.length}
+              </span>
+            )}
+          </button>
+          {/* Duplicate detector */}
+          <button
+            onClick={() => setDupeModal(true)}
+            className="relative flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 hover:bg-slate-50"
+          >
+            <Star size={16} className={potentialDupes.length > 0 ? 'text-amber-500' : 'text-slate-400'} />
+            זיהוי כפילויות
+            {potentialDupes.length > 0 && (
+              <span className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center px-1">
+                {potentialDupes.length}
               </span>
             )}
           </button>
@@ -255,6 +343,42 @@ export default function Expenses() {
           <option value="הכל">כל הקטגוריות</option>
           {categoryList.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
+        <button
+          onClick={() => { setPendingFilter((v) => !v); setLinkedFilter(false); setPage(1); }}
+          className={`relative flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
+            pendingFilter
+              ? 'bg-violet-600 text-white border-violet-600'
+              : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+          }`}
+        >
+          <Repeat2 size={14} />
+          ממתינים לאישור
+          {pendingCount > 0 && (
+            <span className={`text-[11px] font-bold px-1.5 py-0.5 rounded-full ${
+              pendingFilter ? 'bg-white/25 text-white' : 'bg-violet-100 text-violet-600'
+            }`}>
+              {pendingCount}
+            </span>
+          )}
+        </button>
+        <button
+          onClick={() => { setLinkedFilter((v) => !v); setPendingFilter(false); setPage(1); }}
+          className={`relative flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${
+            linkedFilter
+              ? 'bg-blue-600 text-white border-blue-600'
+              : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+          }`}
+        >
+          <Link2 size={14} />
+          מקושר לחיוב קבוע
+          {linkedCount > 0 && (
+            <span className={`text-[11px] font-bold px-1.5 py-0.5 rounded-full ${
+              linkedFilter ? 'bg-white/25 text-white' : 'bg-blue-100 text-blue-600'
+            }`}>
+              {linkedCount}
+            </span>
+          )}
+        </button>
       </Card>
 
       {/* Table */}
@@ -272,12 +396,23 @@ export default function Expenses() {
           </thead>
           <tbody>
             {paginated.map((t) => (
-              <tr key={t.id} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
+              <tr
+                key={t.id}
+                className={`border-b transition-colors ${
+                  t.isVirtual
+                    ? 'border-violet-100 bg-violet-50/40 hover:bg-violet-50/70'
+                    : 'border-slate-50 hover:bg-slate-50'
+                }`}
+              >
                 <td className="px-4 py-3 text-slate-600">{fmtDate(t.date)}</td>
                 <td className="px-4 py-3">
                   <div className="font-medium text-slate-900">{t.business}</div>
                   {t.notes && <div className="text-xs text-slate-400">{t.notes}</div>}
-                  {t.recurringId && (() => {
+                  {t.isVirtual ? (
+                    <div className="inline-flex items-center gap-1 mt-0.5 text-[10px] bg-violet-50 text-violet-500 border border-violet-200 rounded-full px-1.5 py-0.5">
+                      <Repeat2 size={8} /> חיוב קבוע — ממתין לאישור
+                    </div>
+                  ) : t.recurringId && (() => {
                     const rec = recurring.find(r => r.id === t.recurringId);
                     return rec ? (
                       <div className="inline-flex items-center gap-1 mt-0.5 text-[10px] bg-blue-50 text-blue-600 border border-blue-100 rounded-full px-1.5 py-0.5">
@@ -287,7 +422,15 @@ export default function Expenses() {
                   })()}
                 </td>
                 <td className="px-4 py-3">
-                  {categoryRules[t.business] === '__manual__' ? (
+                  {t.isVirtual ? (
+                    /* Virtual rows: plain read-only badge */
+                    <span
+                      className="text-xs px-2 py-1 rounded-full font-medium"
+                      style={{ backgroundColor: (catColors[t.category] ?? '#9ca3af') + '20', color: catColors[t.category] ?? '#9ca3af' }}
+                    >
+                      {t.category}
+                    </span>
+                  ) : categoryRules[t.business] === '__manual__' ? (
                     /* ── Manual business: editable dropdown ── */
                     <select
                       value={t.category}
@@ -302,7 +445,7 @@ export default function Expenses() {
                       {categoryList.map((c) => <option key={c} value={c}>{c}</option>)}
                     </select>
                   ) : (
-                    /* ── Auto / pending business: read-only badge ── */
+                    /* ── Auto / pending business: clickable badge → rules modal ── */
                     <button
                       onClick={() => { setRulesTab('pending'); setDraftCats({}); setRulesModal(true); }}
                       title="שנה דרך קטגוריות אוטומטיות"
@@ -319,49 +462,200 @@ export default function Expenses() {
                 </td>
                 <td className="px-4 py-3 text-slate-500 text-xs">{t.source}</td>
                 <td className="px-4 py-3">
-                  <div className="flex items-center gap-1">
-                    {/* Inline recurring link button */}
-                    <div className="relative" onClick={(e) => e.stopPropagation()}>
+                  {t.isVirtual ? (
+                    /* Virtual row: link to existing  +  confirm */
+                    <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                      {/* ── Link to nearby real transaction ── */}
+                      <div className="relative">
+                        <button
+                          onClick={() => setLinkingVirtTxnId(linkingVirtTxnId === t.id ? null : t.id)}
+                          title="קשר לעסקה קיימת"
+                          className={`flex items-center gap-1 text-xs px-2.5 py-1 border rounded-lg transition-colors ${
+                            linkingVirtTxnId === t.id
+                              ? 'bg-blue-600 text-white border-blue-600'
+                              : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                          }`}
+                        >
+                          <Link2 size={11} /> קשר
+                        </button>
+                        {linkingVirtTxnId === t.id && (() => {
+                          const virtMs   = new Date(t.date + 'T00:00:00').getTime();
+                          const nearby   = transactions
+                            .filter((r) => {
+                              if (r.recurringId) return false;
+                              const diff = Math.abs(new Date(r.date + 'T00:00:00').getTime() - virtMs);
+                              return diff <= 6 * 86400_000;
+                            })
+                            .sort((a, b) => {
+                              const da = Math.abs(new Date(a.date + 'T00:00:00').getTime() - virtMs);
+                              const db = Math.abs(new Date(b.date + 'T00:00:00').getTime() - virtMs);
+                              return da - db;
+                            });
+                          return (
+                            <div className="absolute left-0 top-8 z-50 bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden w-72 animate-scale-in">
+                              <div className="px-3 py-2 bg-slate-50 border-b border-slate-100 text-xs font-semibold text-slate-500">
+                                עסקאות בטווח ±6 ימים מ-{fmtDate(t.date)}
+                              </div>
+                              <div className="max-h-52 overflow-y-auto py-1">
+                                {nearby.length === 0 ? (
+                                  <p className="px-3 py-3 text-xs text-slate-400 text-center">לא נמצאו עסקאות בטווח</p>
+                                ) : nearby.map((real) => (
+                                  <button
+                                    key={real.id}
+                                    onClick={() => { linkVirtToExisting(t, real); setLinkingVirtTxnId(null); }}
+                                    className="w-full text-right px-3 py-2.5 hover:bg-blue-50 transition-colors flex items-center justify-between gap-3"
+                                  >
+                                    <span className="flex-1 min-w-0">
+                                      <span className="block text-sm font-medium text-slate-800 truncate">{real.business}</span>
+                                      <span className="text-xs text-slate-400">{fmtDate(real.date)}</span>
+                                    </span>
+                                    <span className="text-sm font-semibold text-slate-700 shrink-0">{fmtCurrency(real.amount)}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                      {/* ── Confirm as new payment ── */}
                       <button
-                        onClick={() => setLinkingTxnId(linkingTxnId === t.id ? null : t.id)}
-                        title="קשר לחיוב קבוע"
-                        className={`p-1 rounded transition-colors ${t.recurringId ? 'text-blue-400 hover:text-blue-600' : 'text-slate-300 hover:text-blue-400'}`}
+                        onClick={() => { confirmVirtual(t); setLinkingVirtTxnId(null); }}
+                        title="אשר כתשלום שבוצע"
+                        className="flex items-center gap-1 text-xs px-2.5 py-1 bg-green-50 text-green-600 border border-green-200 rounded-lg hover:bg-green-100 transition-colors"
                       >
-                        <Link2 size={13} />
+                        <Check size={11} /> אשר
                       </button>
-                      {linkingTxnId === t.id && (
-                        <div className="absolute left-0 top-7 z-50 bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden min-w-52 animate-scale-in">
-                          <div className="px-3 py-2 bg-slate-50 border-b border-slate-100 text-xs font-semibold text-slate-500">
-                            קשר לחיוב קבוע
-                          </div>
-                          <div className="max-h-48 overflow-y-auto py-1">
+                      {/* ── Refresh / validate occurrence amount ── */}
+                      {(() => {
+                        const rec = recurring.find(r => r.id === t.recurringId);
+                        const hasOverride = rec?.occurrenceOverrides?.[t.date.slice(0, 7)]?.amount !== undefined;
+                        return (
+                          <div className="relative">
                             <button
-                              onClick={() => { linkTxnToRecurring(t, undefined); setLinkingTxnId(null); }}
-                              className={`w-full text-right px-3 py-2 text-sm hover:bg-slate-50 transition-colors ${!t.recurringId ? 'text-slate-400' : 'text-slate-600 font-medium'}`}
+                              onClick={() => {
+                                if (refreshVirtId === t.id) { setRefreshVirtId(null); return; }
+                                setRefreshVirtId(t.id);
+                                setRefreshAmt(String(t.amount));
+                              }}
+                              title="רענן / עדכן סכום"
+                              className={`flex items-center gap-1 text-xs px-2.5 py-1 border rounded-lg transition-colors ${
+                                refreshVirtId === t.id
+                                  ? 'bg-indigo-600 text-white border-indigo-600'
+                                  : hasOverride
+                                    ? 'bg-indigo-50 text-indigo-500 border-indigo-200 hover:bg-indigo-100'
+                                    : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'
+                              }`}
                             >
-                              — ללא קישור —
+                              <RotateCcw size={11} /> רענן
                             </button>
-                            {recurring.map((r) => (
-                              <button
-                                key={r.id}
-                                onClick={() => { linkTxnToRecurring(t, r.id); setLinkingTxnId(null); }}
-                                className={`w-full text-right px-3 py-2 text-sm hover:bg-blue-50 transition-colors flex items-center justify-between gap-2 ${t.recurringId === r.id ? 'bg-blue-50 text-blue-700 font-semibold' : 'text-slate-700'}`}
+                            {refreshVirtId === t.id && (
+                              <div
+                                className="absolute left-0 top-8 z-50 bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden w-56 animate-scale-in"
+                                onClick={(e) => e.stopPropagation()}
                               >
-                                <span className="truncate">{r.name}</span>
-                                <span className="text-xs text-slate-400 shrink-0">{fmtCurrency(r.amount)}</span>
-                              </button>
-                            ))}
+                                <div className="px-3 py-2 bg-slate-50 border-b border-slate-100 text-xs font-semibold text-slate-500">
+                                  סכום {t.date.slice(0, 7)}
+                                  {rec && <span className="font-normal text-slate-400 mr-1">— {rec.name}</span>}
+                                </div>
+                                <div className="p-3 space-y-2">
+                                  {rec && (
+                                    <div className="text-xs text-slate-400">ברירת מחדל: {fmtCurrency(rec.amount)}</div>
+                                  )}
+                                  <input
+                                    type="number"
+                                    value={refreshAmt}
+                                    onChange={(e) => setRefreshAmt(e.target.value)}
+                                    className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:border-indigo-300 focus:ring-2 focus:ring-indigo-50 outline-none"
+                                    autoFocus
+                                  />
+                                  <div className="flex gap-2">
+                                    <button
+                                      onClick={() => {
+                                        if (!t.recurringId) return;
+                                        const amt = parseFloat(refreshAmt);
+                                        if (!isNaN(amt) && amt > 0) {
+                                          useStore.getState().setRecurringOccurrence(t.recurringId, t.date.slice(0, 7), { amount: amt });
+                                        }
+                                        setRefreshVirtId(null);
+                                      }}
+                                      className="flex-1 bg-indigo-600 text-white text-xs py-1.5 rounded-lg hover:bg-indigo-700 font-medium"
+                                    >
+                                      שמור
+                                    </button>
+                                    {hasOverride && (
+                                      <button
+                                        onClick={() => {
+                                          if (!t.recurringId) return;
+                                          useStore.getState().setRecurringOccurrence(t.recurringId, t.date.slice(0, 7), { amount: undefined });
+                                          setRefreshVirtId(null);
+                                        }}
+                                        title="אפס לסכום ברירת מחדל"
+                                        className="text-xs px-2 py-1.5 border border-slate-200 text-slate-400 rounded-lg hover:bg-slate-50"
+                                      >
+                                        איפוס
+                                      </button>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
                           </div>
-                        </div>
-                      )}
+                        );
+                      })()}
+                      {/* ── Dismiss (skip this occurrence) ── */}
+                      <button
+                        onClick={() => { dismissVirtual(t); setLinkingVirtTxnId(null); }}
+                        title="דלג על תשלום זה"
+                        className="flex items-center gap-1 text-xs px-2 py-1 bg-slate-50 text-slate-400 border border-slate-200 rounded-lg hover:bg-red-50 hover:text-red-400 hover:border-red-200 transition-colors"
+                      >
+                        <X size={11} />
+                      </button>
                     </div>
-                    <button onClick={() => openEdit(t)} className="text-slate-300 hover:text-blue-500 p-1">
-                      <Pencil size={13} />
-                    </button>
-                    <button onClick={() => deleteTransaction(t.id)} className="text-slate-300 hover:text-red-400 p-1">
-                      <X size={14} />
-                    </button>
-                  </div>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      {/* Inline recurring link button */}
+                      <div className="relative" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={() => setLinkingTxnId(linkingTxnId === t.id ? null : t.id)}
+                          title="קשר לחיוב קבוע"
+                          className={`p-1 rounded transition-colors ${t.recurringId ? 'text-blue-400 hover:text-blue-600' : 'text-slate-300 hover:text-blue-400'}`}
+                        >
+                          <Link2 size={13} />
+                        </button>
+                        {linkingTxnId === t.id && (
+                          <div className="absolute left-0 top-7 z-50 bg-white rounded-xl shadow-2xl border border-slate-200 overflow-hidden min-w-52 animate-scale-in">
+                            <div className="px-3 py-2 bg-slate-50 border-b border-slate-100 text-xs font-semibold text-slate-500">
+                              קשר לחיוב קבוע
+                            </div>
+                            <div className="max-h-48 overflow-y-auto py-1">
+                              <button
+                                onClick={() => { linkTxnToRecurring(t, undefined); setLinkingTxnId(null); }}
+                                className={`w-full text-right px-3 py-2 text-sm hover:bg-slate-50 transition-colors ${!t.recurringId ? 'text-slate-400' : 'text-slate-600 font-medium'}`}
+                              >
+                                — ללא קישור —
+                              </button>
+                              {recurring.map((r) => (
+                                <button
+                                  key={r.id}
+                                  onClick={() => { linkTxnToRecurring(t, r.id); setLinkingTxnId(null); }}
+                                  className={`w-full text-right px-3 py-2 text-sm hover:bg-blue-50 transition-colors flex items-center justify-between gap-2 ${t.recurringId === r.id ? 'bg-blue-50 text-blue-700 font-semibold' : 'text-slate-700'}`}
+                                >
+                                  <span className="truncate">{r.name}</span>
+                                  <span className="text-xs text-slate-400 shrink-0">{fmtCurrency(r.amount)}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      <button onClick={() => openEdit(t)} className="text-slate-300 hover:text-blue-500 p-1">
+                        <Pencil size={13} />
+                      </button>
+                      <button onClick={() => deleteTransaction(t.id)} className="text-slate-300 hover:text-red-400 p-1">
+                        <X size={14} />
+                      </button>
+                    </div>
+                  )}
                 </td>
               </tr>
             ))}
@@ -690,6 +984,44 @@ export default function Expenses() {
       {importToast && (
         <ImportToast data={importToast} onClose={() => setImportToast(null)} />
       )}
+
+      {/* ── Duplicate detector modal ──────────────────────────────────── */}
+      <Modal open={dupeModal} onClose={() => setDupeModal(false)} title={`זיהוי כפילויות${potentialDupes.length > 0 ? ` — ${potentialDupes.length} נמצאו` : ''}`}>
+        {potentialDupes.length === 0 ? (
+          <div className="flex flex-col items-center gap-3 py-10 text-slate-400">
+            <Star size={36} className="text-slate-200" />
+            <p className="text-sm font-medium text-slate-500">לא נמצאו עסקאות כפולות</p>
+            <p className="text-xs text-center">כל העסקאות נראות ייחודיות — אין זוגות עם אותו עסק, סכום, ותאריך קרוב.</p>
+          </div>
+        ) : (
+          <div className="space-y-3 max-h-[60vh] overflow-y-auto pl-1">
+            <p className="text-xs text-slate-400 pb-1">
+              עסקאות עם אותו עסק + אותו סכום + תאריך באותו היום או עד 3 ימי הפרש. מחק את העסקה הכפולה.
+            </p>
+            {potentialDupes.map(({ a, b, reason }, idx) => (
+              <div key={idx} className="border border-amber-100 rounded-xl overflow-hidden">
+                <div className="px-3 py-1.5 bg-amber-50 text-[11px] font-semibold text-amber-700">{reason}</div>
+                {[a, b].map((t) => (
+                  <div key={t.id} className="flex items-center gap-3 px-3 py-2.5 border-t border-amber-50 first:border-t-0">
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm font-medium text-slate-800 truncate block">{t.business}</span>
+                      <span className="text-xs text-slate-400">{fmtDate(t.date)} • {t.source}</span>
+                    </div>
+                    <span className="text-sm font-semibold text-slate-700 shrink-0">{fmtCurrency(t.amount)}</span>
+                    <button
+                      onClick={() => deleteTransaction(t.id)}
+                      className="shrink-0 text-slate-300 hover:text-red-500 transition-colors p-1"
+                      title="מחק עסקה זו"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </Modal>
 
       {/* Add Manual Modal */}
       <Modal open={addModal} onClose={() => setAddModal(false)} title="הוסף הוצאה">

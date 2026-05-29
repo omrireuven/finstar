@@ -21,7 +21,8 @@ export interface Transaction {
   pending: boolean;
   categoryOverride?: Category;
   aiCategorized: boolean;
-  recurringId?: string; // links this transaction to a RecurringCharge occurrence
+  recurringId?: string;  // links this transaction to a RecurringCharge occurrence
+  isVirtual?: boolean;   // true = synthesised from recurring charge, not persisted
 }
 
 /** Per-month override for a single recurring charge occurrence */
@@ -29,6 +30,7 @@ export interface RecurringOccurrenceOverride {
   amount?: number;         // actual amount paid (if different from default)
   note?: string;           // free-text note about this occurrence
   transactionId?: string;  // ID of the matching Transaction in expenses
+  dismissed?: boolean;     // user explicitly skipped this virtual occurrence
 }
 
 export interface RecurringCharge {
@@ -78,6 +80,7 @@ export interface SavingsAccount {
   maturityDate: string;
   openDate: string;
   open: boolean;
+  link?: string;
 }
 
 export interface GemelFund {
