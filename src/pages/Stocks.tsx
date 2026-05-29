@@ -151,7 +151,7 @@ export default function Stocks() {
 
   const { lots, prices, usdIls, addLot, updateLot, deleteLot, updatePrices } = useStore();
   const { corsProxy } = useSettings();
-  const { rows, totalValue } = usePortfolioSummary();
+  const { rows, totalValue, totalNativeUSD, totalNativeILS } = usePortfolioSummary();
   const setEntry = useHistoryCache((s) => s.setEntry);
   const clearAll = useHistoryCache((s) => s.clearAll);
 
@@ -260,10 +260,17 @@ export default function Stocks() {
     [allHistory, lots, usdIls]
   );
 
+  // ILS-equivalent total cost (used for portfolio chart reference line)
   const totalCost = useMemo(
-    () => rows.reduce((a, r) => a + r.quantity * r.avgCost * (r.currency === 'USD' ? usdIls : 1), 0),
+    () => rows.reduce((a, r) => a + r.costNative * (r.currency === 'USD' ? usdIls : 1), 0),
     [rows, usdIls]
   );
+  // Native per-currency costs
+  const totalCostNativeUSD = useMemo(() => rows.filter((r) => r.currency === 'USD').reduce((a, r) => a + r.costNative, 0), [rows]);
+  const totalCostNativeILS = useMemo(() => rows.filter((r) => r.currency === 'ILS').reduce((a, r) => a + r.costNative, 0), [rows]);
+  // Native per-currency P&L
+  const totalPnlNativeUSD = useMemo(() => rows.filter((r) => r.currency === 'USD').reduce((a, r) => a + r.pnlNative, 0), [rows]);
+  const totalPnlNativeILS = useMemo(() => rows.filter((r) => r.currency === 'ILS').reduce((a, r) => a + r.pnlNative, 0), [rows]);
 
   const sparklines = useMemo(() => {
     const out: Record<string, number[]> = {};
@@ -322,9 +329,10 @@ export default function Stocks() {
     return { buys, sells };
   }, [selectedTicker, lots, detailData]);
 
-  const totalPnl = rows.reduce((a, r) => a + r.pnl, 0);
+  const totalPnl = rows.reduce((a, r) => a + r.pnlILS, 0);  // ILS for chart/color
   const isAboveCost = totalValue >= totalCost;
   const portfolioPnlPct = totalCost > 0 ? ((totalValue - totalCost) / totalCost) * 100 : 0;
+  const hasBoth = totalNativeUSD > 0 && totalNativeILS > 0;
 
   // ── Actions ────────────────────────────────────────────────────────────────
   async function refreshPrices() {
@@ -433,7 +441,11 @@ export default function Stocks() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">מניות וניירות ערך</h1>
-          <p className="text-slate-500 text-sm">{rows.length} ניירות • שווי {fmtCurrency(totalValue)}</p>
+          <p className="text-slate-500 text-sm">
+            {rows.length} ניירות
+            {totalNativeUSD > 0 && <> • <span className="font-medium text-slate-700">${fmt(totalNativeUSD, 0)}</span></>}
+            {totalNativeILS > 0 && <> • <span className="font-medium text-slate-700">{fmtCurrency(totalNativeILS)}</span></>}
+          </p>
         </div>
         <div className="flex gap-2">
           <button
@@ -456,23 +468,84 @@ export default function Stocks() {
 
       {/* ── KPI Cards ── */}
       <div className="grid grid-cols-3 gap-4">
+
+        {/* שווי תיק נוכחי */}
         <Card>
-          <div className="text-sm text-slate-500">שווי תיק נוכחי</div>
-          <div className="text-2xl font-bold text-slate-900">{fmtCurrency(totalValue)}</div>
-        </Card>
-        <Card>
-          <div className="text-sm text-slate-500">עלות רכישה</div>
-          <div className="text-2xl font-bold text-slate-900">{fmtCurrency(totalCost)}</div>
-        </Card>
-        <Card>
-          <div className="text-sm text-slate-500">רווח/הפסד כולל</div>
-          <div className={`text-2xl font-bold ${isAboveCost ? 'text-green-600' : 'text-red-500'}`}>
-            {totalPnl >= 0 ? '+' : ''}{fmtCurrency(totalPnl)}
-            <span className="text-sm font-normal mr-1">
-              ({portfolioPnlPct >= 0 ? '+' : ''}{portfolioPnlPct.toFixed(1)}%)
-            </span>
+          <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1.5">שווי תיק נוכחי</div>
+          <div className="space-y-0.5">
+            {totalNativeUSD > 0 && (
+              <div className={hasBoth ? 'text-xl font-bold text-slate-900' : 'text-2xl font-bold text-slate-900'}>
+                ${fmt(totalNativeUSD, 0)}
+              </div>
+            )}
+            {totalNativeILS > 0 && (
+              <div className={hasBoth ? 'text-xl font-bold text-slate-900' : 'text-2xl font-bold text-slate-900'}>
+                {fmtCurrency(totalNativeILS)}
+              </div>
+            )}
           </div>
+          {totalNativeUSD > 0 && (
+            <div className="text-xs text-slate-400 mt-1">≈ {fmtCurrency(totalValue)} כולל המרה</div>
+          )}
         </Card>
+
+        {/* עלות רכישה */}
+        <Card>
+          <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1.5">עלות רכישה</div>
+          <div className="space-y-0.5">
+            {totalCostNativeUSD > 0 && (
+              <div className={hasBoth ? 'text-xl font-bold text-slate-900' : 'text-2xl font-bold text-slate-900'}>
+                ${fmt(totalCostNativeUSD, 0)}
+              </div>
+            )}
+            {totalCostNativeILS > 0 && (
+              <div className={hasBoth ? 'text-xl font-bold text-slate-900' : 'text-2xl font-bold text-slate-900'}>
+                {fmtCurrency(totalCostNativeILS)}
+              </div>
+            )}
+          </div>
+          {totalCostNativeUSD > 0 && (
+            <div className="text-xs text-slate-400 mt-1">≈ {fmtCurrency(totalCost)} כולל המרה</div>
+          )}
+        </Card>
+
+        {/* רווח/הפסד כולל */}
+        <Card>
+          <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1.5">רווח/הפסד כולל</div>
+          <div className="space-y-0.5">
+            {totalNativeUSD > 0 && (() => {
+              const up = totalPnlNativeUSD >= 0;
+              return (
+                <div className={hasBoth ? 'text-xl font-bold' : 'text-2xl font-bold'} style={{ color: up ? '#16a34a' : '#ef4444' }}>
+                  {up ? '+' : ''}${fmt(totalPnlNativeUSD, 0)}
+                  {!hasBoth && (
+                    <span className="text-sm font-normal mr-1">
+                      ({portfolioPnlPct >= 0 ? '+' : ''}{portfolioPnlPct.toFixed(1)}%)
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
+            {totalNativeILS > 0 && (() => {
+              const up = totalPnlNativeILS >= 0;
+              const pct = totalCostNativeILS > 0 ? (totalPnlNativeILS / totalCostNativeILS) * 100 : 0;
+              return (
+                <div className={hasBoth ? 'text-xl font-bold' : 'text-2xl font-bold'} style={{ color: up ? '#16a34a' : '#ef4444' }}>
+                  {up ? '+' : ''}{fmtCurrency(totalPnlNativeILS)}
+                  {!hasBoth && (
+                    <span className="text-sm font-normal mr-1">
+                      ({pct >= 0 ? '+' : ''}{pct.toFixed(1)}%)
+                    </span>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+          {hasBoth && (
+            <div className="text-xs text-slate-400 mt-1">≈ {totalPnl >= 0 ? '+' : ''}{fmtCurrency(totalPnl)} כולל המרה</div>
+          )}
+        </Card>
+
       </div>
 
       {/* ── Combined Portfolio Chart ── */}
@@ -563,11 +636,23 @@ export default function Stocks() {
                     {r.pnlPct >= 0 ? '+' : ''}{fmt(r.pnlPct, 2)}%
                   </div>
                 </div>
-                <div className="w-28 text-right shrink-0">
-                  <div className="text-sm font-semibold text-slate-900">{fmtCurrency(r.currentValue)}</div>
-                  <div className={`text-xs font-medium ${positive ? 'text-green-600' : 'text-red-500'}`}>
-                    {positive ? '+' : ''}{fmtCurrency(r.pnl)}
+                <div className="w-32 text-right shrink-0">
+                  {/* Value in native currency — primary display */}
+                  <div className="text-sm font-semibold text-slate-900">
+                    {r.currency === 'USD'
+                      ? `$${fmt(r.currentValueNative, 0)}`
+                      : fmtCurrency(r.currentValueNative)}
                   </div>
+                  {/* P&L in native currency */}
+                  <div className={`text-xs font-medium ${positive ? 'text-green-600' : 'text-red-500'}`}>
+                    {positive ? '+' : ''}{r.currency === 'USD'
+                      ? `$${fmt(r.pnlNative, 0)}`
+                      : fmtCurrency(r.pnlNative)}
+                  </div>
+                  {/* ≈ ILS estimate (only for USD holdings) */}
+                  {r.currency === 'USD' && (
+                    <div className="text-[10px] text-slate-400 mt-0.5">≈ {fmtCurrency(r.currentValueILS)}</div>
+                  )}
                 </div>
                 <div className="w-8 flex justify-end shrink-0">
                   {positive ? <TrendingUp size={16} className="text-green-500" />

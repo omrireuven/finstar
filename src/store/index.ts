@@ -294,20 +294,47 @@ export const usePortfolioSummary = () => {
         byTicker[lot.ticker] = { ticker: lot.ticker, name: lot.name, sector: lot.sector, quantity: 0, cost: 0, currency: lot.currency };
       }
       byTicker[lot.ticker].quantity += lot.quantity;
+      // cost accumulated in native currency (USD lots → USD, ILS lots → ILS)
       byTicker[lot.ticker].cost += lot.quantity * lot.buyPrice + lot.commission;
     }
 
     const rows = Object.values(byTicker).map((r) => {
       const price = prices[r.ticker] ?? 0;
-      const currentValue = r.quantity * price;
-      const costIls = r.currency === 'USD' ? r.cost * usdIls : r.cost;
-      const currentIls = r.currency === 'USD' ? currentValue * usdIls : currentValue;
-      const pnl = currentIls - costIls;
-      const pnlPct = costIls > 0 ? (pnl / costIls) * 100 : 0;
-      return { ...r, price, currentValue: currentIls, avgCost: r.cost / r.quantity, pnl, pnlPct };
+      const rate  = r.currency === 'USD' ? usdIls : 1;
+
+      // Native-currency values (no conversion)
+      const currentValueNative = r.quantity * price;         // in USD or ILS
+      const costNative         = r.cost;                     // in USD or ILS
+      const pnlNative          = currentValueNative - costNative;
+      const pnlPct             = costNative > 0 ? (pnlNative / costNative) * 100 : 0;
+
+      // ILS-equivalent values (for cross-currency totals and dashboard)
+      const currentValueILS = currentValueNative * rate;
+      const costILS         = costNative * rate;
+      const pnlILS          = pnlNative * rate;
+
+      return {
+        ...r,
+        price,
+        // ── Native currency (display primary) ──
+        currentValueNative,
+        costNative,
+        pnlNative,
+        avgCost: costNative / r.quantity,   // per share, native currency
+        // ── ILS-equivalent (totals, chart, dashboard) ──
+        currentValue: currentValueILS,       // backward compat alias
+        currentValueILS,
+        pnl: pnlILS,                         // backward compat alias
+        pnlILS,
+        pnlPct,
+      };
     });
 
-    const totalValue = rows.reduce((a, r) => a + r.currentValue, 0);
-    return { rows, totalValue };
+    // Totals: native per currency + combined ILS
+    const totalValue     = rows.reduce((a, r) => a + r.currentValueILS, 0);
+    const totalNativeUSD = rows.filter((r) => r.currency === 'USD').reduce((a, r) => a + r.currentValueNative, 0);
+    const totalNativeILS = rows.filter((r) => r.currency === 'ILS').reduce((a, r) => a + r.currentValueNative, 0);
+
+    return { rows, totalValue, totalNativeUSD, totalNativeILS };
   }, [lots, prices, usdIls]);
 };
