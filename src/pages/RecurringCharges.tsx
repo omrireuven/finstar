@@ -145,8 +145,10 @@ export default function RecurringCharges() {
   // ── Aggregates ───────────────────────────────────────────────────────
   const now       = new Date();
   const today     = now.getDate();
-  const permanent = recurring.filter(r => (r.chargeType ?? 'permanent') === 'permanent');
-  const periodic  = recurring.filter(r => r.chargeType === 'periodic');
+  // Sort descending by dayOfMonth (charges near end of month appear first)
+  const sortByDay = (a: RecurringCharge, b: RecurringCharge) => b.dayOfMonth - a.dayOfMonth;
+  const permanent = recurring.filter(r => (r.chargeType ?? 'permanent') === 'permanent').sort(sortByDay);
+  const periodic  = recurring.filter(r => r.chargeType === 'periodic').sort(sortByDay);
   const active    = recurring.filter(r => r.active && !(r.endDate && new Date(r.endDate) < now));
   const totalMonthly = active.reduce((a, r) => a + r.amount, 0);
   const next7     = active.filter(r => r.dayOfMonth >= today && r.dayOfMonth <= today + 7);

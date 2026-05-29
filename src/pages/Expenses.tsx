@@ -1,5 +1,5 @@
-import { useState, useRef } from 'react';
-import { Upload, Plus, Search, Download, Lightbulb, X, Pencil, Link2, Trash2, CheckCircle2 } from 'lucide-react';
+import { useState, useRef, useEffect } from 'react';
+import { Upload, Plus, Search, Download, Lightbulb, X, Pencil, Link2, Trash2, CheckCircle2, CheckCheck } from 'lucide-react';
 import { useStore, useCategoryList, useCategoryColorMap } from '../store';
 import Card from '../components/common/Card';
 import Modal from '../components/common/Modal';
@@ -38,6 +38,22 @@ export default function Expenses() {
   // Import dedup preview
   type DupResult = { fresh: Transaction[]; dupes: number; total: number; allDupes: boolean };
   const [dupResult, setDupResult] = useState<DupResult | null>(null);
+
+  // Import success toast
+  type ToastData = { count: number; totalAmt: number; avg: number; topCat: string; dateRange: string };
+  const [importToast, setImportToast] = useState<ToastData | null>(null);
+
+  function buildToast(txns: Transaction[]): ToastData {
+    const totalAmt = txns.reduce((a, t) => a + t.amount, 0);
+    const avg = totalAmt / txns.length;
+    const byCat: Record<string, number> = {};
+    for (const t of txns) byCat[t.category] = (byCat[t.category] || 0) + 1;
+    const topCat = Object.entries(byCat).sort((a, b) => b[1] - a[1])[0]?.[0] ?? '—';
+    const dates = txns.map((t) => t.date).sort();
+    const first = dates[0].slice(0, 7);
+    const last  = dates[dates.length - 1].slice(0, 7);
+    return { count: txns.length, totalAmt, avg, topCat, dateRange: first === last ? first : `${first} – ${last}` };
+  }
 
   const BLANK_FORM = { date: new Date().toISOString().slice(0, 10), business: '', amount: '', category: 'אחר' as Category, source: 'מזומן', notes: '', recurringId: '' };
   const [form, setForm] = useState(BLANK_FORM);
@@ -133,6 +149,7 @@ export default function Expenses() {
         addTransactions(fresh);
         setImportModal(false);
         setDupResult(null);
+        setImportToast(buildToast(fresh));
       }
     } catch {
       alert('שגיאה בייבוא הקובץ');
@@ -143,9 +160,11 @@ export default function Expenses() {
 
   function confirmImport() {
     if (!dupResult || dupResult.fresh.length === 0) return;
-    addTransactions(dupResult.fresh);
+    const fresh = dupResult.fresh;
+    addTransactions(fresh);
     setDupResult(null);
     setImportModal(false);
+    setImportToast(buildToast(fresh));
   }
 
   function linkTxnToRecurring(t: Transaction, newRecurringId: string | undefined) {
@@ -667,6 +686,11 @@ export default function Expenses() {
         </div>
       </Modal>
 
+      {/* ── Import success toast ─────────────────────────────────────── */}
+      {importToast && (
+        <ImportToast data={importToast} onClose={() => setImportToast(null)} />
+      )}
+
       {/* Add Manual Modal */}
       <Modal open={addModal} onClose={() => setAddModal(false)} title="הוסף הוצאה">
         <div className="space-y-4">
@@ -699,6 +723,105 @@ export default function Expenses() {
           </button>
         </div>
       </Modal>
+    </div>
+  );
+}
+
+// ── Import success toast ──────────────────────────────────────────────────────
+const TOAST_DURATION = 6000; // ms
+
+function ImportToast({
+  data,
+  onClose,
+}: {
+  data: { count: number; totalAmt: number; avg: number; topCat: string; dateRange: string };
+  onClose: () => void;
+}) {
+  const [progress, setProgress] = useState(100);
+  const [leaving, setLeaving] = useState(false);
+  const pausedRef   = useRef(false);
+  const remainingRef = useRef(TOAST_DURATION);
+  const lastTickRef  = useRef(Date.now());
+
+  function dismiss() {
+    setLeaving(true);
+    setTimeout(onClose, 260); // wait for slide-out animation
+  }
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (pausedRef.current) {
+        lastTickRef.current = Date.now(); // reset tick so we don't "catch up" after unpause
+        return;
+      }
+      const now = Date.now();
+      const elapsed = now - lastTickRef.current;
+      lastTickRef.current = now;
+      remainingRef.current -= elapsed;
+      if (remainingRef.current <= 0) { dismiss(); return; }
+      setProgress((remainingRef.current / TOAST_DURATION) * 100);
+    }, 40);
+    return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div
+      className={`fixed bottom-6 left-6 z-[60] w-80 bg-white rounded-2xl shadow-2xl overflow-hidden ${
+        leaving ? 'animate-slide-out' : 'animate-slide-up'
+      }`}
+      style={{ border: '1px solid rgba(226,232,240,0.8)' }}
+      onMouseEnter={() => { pausedRef.current = true; }}
+      onMouseLeave={() => { pausedRef.current = false; lastTickRef.current = Date.now(); }}
+    >
+      {/* Timer bar — drains left to right */}
+      <div className="h-1 bg-slate-100">
+        <div
+          className="h-full bg-green-500 transition-none"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+
+      {/* Content */}
+      <div className="p-4">
+        <div className="flex items-start gap-3">
+          <div className="w-9 h-9 rounded-xl bg-green-50 flex items-center justify-center shrink-0">
+            <CheckCheck size={18} className="text-green-600" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="font-semibold text-slate-900 text-sm">ייבוא הצליח!</div>
+            <div className="text-xs text-slate-500 mt-0.5">
+              יובאו <span className="font-bold text-slate-700">{data.count}</span> עסקאות
+            </div>
+          </div>
+          <button
+            onClick={dismiss}
+            className="text-slate-300 hover:text-slate-500 shrink-0 p-0.5 transition-colors"
+          >
+            <X size={14} />
+          </button>
+        </div>
+
+        {/* Stats grid */}
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <div className="bg-slate-50 rounded-xl p-2.5">
+            <div className="text-[10px] text-slate-400 uppercase tracking-wide mb-0.5">סה"כ יובא</div>
+            <div className="text-sm font-bold text-slate-800">{fmtCurrency(data.totalAmt)}</div>
+          </div>
+          <div className="bg-slate-50 rounded-xl p-2.5">
+            <div className="text-[10px] text-slate-400 uppercase tracking-wide mb-0.5">ממוצע לעסקה</div>
+            <div className="text-sm font-bold text-slate-800">{fmtCurrency(data.avg)}</div>
+          </div>
+          <div className="bg-slate-50 rounded-xl p-2.5">
+            <div className="text-[10px] text-slate-400 uppercase tracking-wide mb-0.5">קטגוריה מובילה</div>
+            <div className="text-xs font-semibold text-slate-700 truncate">{data.topCat}</div>
+          </div>
+          <div className="bg-slate-50 rounded-xl p-2.5">
+            <div className="text-[10px] text-slate-400 uppercase tracking-wide mb-0.5">טווח תאריכים</div>
+            <div className="text-xs font-semibold text-slate-700">{data.dateRange}</div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

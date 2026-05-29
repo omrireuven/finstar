@@ -23,29 +23,39 @@ export default function Modal({ open, onClose, title, children, size = 'md' }: M
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 modal-overlay" dir="rtl">
-      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+    <>
+      {/*
+        Backdrop and panel are separate fixed siblings so the backdrop's
+        backdrop-filter: blur() cannot bleed into the modal panel content.
+      */}
+      <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm modal-overlay" onClick={onClose} />
+
       <div
-        className={clsx(
-          'modal-panel relative bg-white rounded-2xl shadow-2xl w-full max-h-[90vh] overflow-y-auto',
-          sizes[size]
-        )}
-        style={{ border: '1px solid rgba(226,232,240,0.6)' }}
+        className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none"
+        dir="rtl"
       >
         <div
-          className="flex items-center justify-between px-6 py-4"
-          style={{ borderBottom: '1px solid #f1f5f9' }}
+          className={clsx(
+            'modal-panel pointer-events-auto bg-white rounded-2xl shadow-2xl w-full max-h-[90vh] overflow-y-auto',
+            sizes[size]
+          )}
+          style={{ border: '1px solid rgba(226,232,240,0.6)' }}
         >
-          <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
-          <button
-            onClick={onClose}
-            className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition-colors"
+          <div
+            className="flex items-center justify-between px-6 py-4"
+            style={{ borderBottom: '1px solid #f1f5f9' }}
           >
-            <X size={17} />
-          </button>
+            <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
+            <button
+              onClick={onClose}
+              className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition-colors"
+            >
+              <X size={17} />
+            </button>
+          </div>
+          <div className="px-6 py-5">{children}</div>
         </div>
-        <div className="px-6 py-5">{children}</div>
       </div>
-    </div>
+    </>
   );
 }
