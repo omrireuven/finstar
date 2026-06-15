@@ -1,32 +1,150 @@
 import { useState } from 'react';
-import { Plus, AlertCircle, Pencil, ExternalLink, Info } from 'lucide-react';
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { Plus, AlertCircle, Pencil, ExternalLink, Info, ChevronDown, ChevronUp, BookOpen, GraduationCap, Eye, EyeOff } from 'lucide-react';
+import { AreaChart, Area, LineChart, Line, ReferenceLine, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import { useStore } from '../store';
 import Card from '../components/common/Card';
 import Modal from '../components/common/Modal';
 import Badge from '../components/common/Badge';
 import { fmtCurrency, fmtDate, fmt } from '../utils/format';
-import type { SavingsAccount, GemelFund } from '../types';
+import type { SavingsAccount, GemelFund, HishtalmutFund } from '../types';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const BANKS = ['בנק הפועלים', 'בנק לאומי', 'מזרחי-טפחות', 'בנק דיסקונט', 'הבנק הבינלאומי', 'בנק מרכנתיל', 'אחר'];
-const GEMEL_COMPANIES = ['מיטב', 'הפניקס', 'מגדל', 'הראל', 'כלל', 'מנורה', 'פסגות', 'אלטשולר שחם'];
+const FUND_COMPANIES = ['מיטב', 'הפניקס', 'מגדל', 'הראל', 'כלל', 'מנורה', 'פסגות', 'אלטשולר שחם', 'אינפיניטי', 'אחר'];
+const GEMEL_COMPANIES = FUND_COMPANIES;
 const GEMEL_TRACKS = ['מסלול כללי', 'אג"ח שקלי', 'מניות', 'מניות חו"ל', 'מסלול סולידי', 'מסלול הלכתי'];
 const PENSION_TRACKS = ['מסלול כללי', 'מסלול אג"ח', 'מסלול מניות', 'מסלול הלכתי', 'מסלול סולידי', 'מסלול מניות חו"ל'];
+const HISHTALMUT_TRACKS = ['מסלול כללי', 'מסלול מניות', 'מסלול אג"ח', 'מסלול מניות חו"ל', 'מסלול סולידי', 'מסלול הלכתי'];
 const COMPANY_LINKS: Record<string, string> = {
   'מיטב': 'https://www.meitav.co.il', 'הפניקס': 'https://www.phoenix.co.il',
   'מגדל': 'https://www.migdal.co.il', 'הראל': 'https://www.harel.co.il',
   'כלל': 'https://www.clal-finance.co.il',
 };
 
+// ── Fund type explanations ─────────────────────────────────────────────────────
+const FUND_EXPLAINERS = {
+  savings: {
+    title: 'פיקדון בנקאי',
+    icon: '🏦',
+    color: 'blue',
+    what: 'הפקדת כסף בבנק לתקופה קצובה תמורת ריבית קבועה. הכסף "נעול" עד מועד הפירעון.',
+    pros: ['ריבית קבועה ומובטחת', 'מוגן על ידי ביטוח פיקדונות עד ₪250,000', 'מכשיר הכי סולידי'],
+    cons: ['ריבית נמוכה יחסית', 'קנס על פירעון מוקדם', 'אין גידול ריאלי לטווח ארוך'],
+    where: 'אזור אישי באתר הבנק ← פיקדונות ← לצפייה בפירוט',
+    fields: [
+      { label: 'יתרה', where: 'הסכום הכולל שהופקד (לא כולל ריבית שטרם נצברה)' },
+      { label: 'ריבית שנתית', where: 'מופיעה בתעודת הפיקדון. טיפ: חפש "ריבית נומינלית שנתית"' },
+      { label: 'תאריך פתיחה/פירעון', where: 'מופיע בתעודת הפיקדון או בדף החשבון' },
+    ],
+  },
+  gemel: {
+    title: 'קופת גמל להשקעה',
+    icon: '📈',
+    color: 'purple',
+    what: 'חיסכון גמיש לכל מטרה. הכסף מושקע בשוק ההון. ניתן למשוך בכל עת (עם מס) או לפרישה (פטור ממס).',
+    pros: ['גמישות — ניתן למשוך בכל עת', 'מגוון מסלולי השקעה', 'פטור ממס בפרישה אם ממירים לקצבה'],
+    cons: ['מס 25% על רווחים בפדיון מוקדם', 'תשואה תלויה בשוק', 'דמי ניהול שנתיים'],
+    where: 'אתר החברה המנהלת ← אזור אישי ← "קופות גמל" ← "קופת גמל להשקעה"',
+    fields: [
+      { label: 'יתרה', where: '"יתרת חיסכון" או "שווי תיק" בדף הקרן' },
+      { label: 'תשואה שנתית', where: '"תשואה שנתית" לשנה הנוכחית בדשבורד' },
+      { label: 'תשואה מצטברת', where: '"תשואה כוללת" מתאריך פתיחה — לרוב בלשונית "תשואות"' },
+      { label: 'דמי ניהול מצבירה', where: '"דמי ניהול על צבירה" — בדרך כלל 0.1%–1.1% (מקסימום חוקי 1.1%)' },
+      { label: 'דמי ניהול מהפקדות', where: '"דמי ניהול על הפקדות" — בדרך כלל 0%–2% (מקסימום חוקי 4%)' },
+    ],
+  },
+  hishtalmut: {
+    title: 'קרן השתלמות',
+    icon: '🎓',
+    color: 'teal',
+    what: 'כלי החיסכון המשתלם ביותר לשכירים. הפקדות פטורות ממס, הכסף נזיל אחרי 6 שנים. מעסיק מפריש 7.5% מהשכר ועובד 2.5%.',
+    pros: ['הטבת מס מלאה על ההפקדות (עד תקרה)', 'תשואה פטורה ממס לחלוטין', 'נזיל אחרי 6 שנים לכל מטרה', 'ניתן להשתמש כ"קיר הגנה" מול מס הכנסה'],
+    cons: ['נעול 6 שנים מהפקדה ראשונה', 'תקרת הפקדה להטבת מס (סביב ₪47,136 בשנה)', 'תלוי בשוק ההון'],
+    where: 'אתר החברה המנהלת ← "קרן השתלמות" ← סקירת הקרן',
+    fields: [
+      { label: 'יתרה', where: '"יתרת חיסכון" בדף הקרן' },
+      { label: 'הפרשת עובד', where: 'תלוש השכר ← "קרן השתלמות עובד" — לרוב 2.5%' },
+      { label: 'הפרשת מעביד', where: 'תלוש השכר ← "קרן השתלמות מעביד" — לרוב 7.5%' },
+      { label: 'דמי ניהול', where: '"דמי ניהול על צבירה" — מקסימום חוקי 1.5%' },
+      { label: 'תאריך פתיחה', where: 'מועד הפתיחה הראשוני — קובע מתי הקרן נפתחת למשיכה' },
+    ],
+  },
+  pension: {
+    title: 'קרן פנסיה',
+    icon: '🧓',
+    color: 'green',
+    what: 'קרן הפנסיה צוברת כסף לאורך חיי העבודה ומשלמת קצבה חודשית מגיל פרישה. כוללת גם כיסוי ביטוחי (נכות ושארים).',
+    pros: ['קצבה חודשית לכל החיים', 'כיסוי נכות ושארים מובנה', 'הטבות מס משמעותיות', 'הפרשות מעסיק חובה'],
+    cons: ['לא ניתן למשוך לפני גיל פרישה', 'קצבה (לא סכום חד-פעמי)', 'דמי ניהול וכיסוי ביטוחי מקטינים צבירה'],
+    where: 'הראל: my.harel.co.il ← "הפנסיה שלי" ← "פירוט קרן פנסיה"',
+    fields: [
+      { label: 'יתרה נוכחית', where: '"יתרת חיסכון" בדשבורד הראשי של הקרן' },
+      { label: 'משכורת ברוטו', where: 'תלוש השכר — "שכר ברוטו" (לפני ניכויים)' },
+      { label: 'הפרשת עובד', where: 'תלוש השכר ← "עובד פנסיה" — לרוב 6% או 7%' },
+      { label: 'הפרשת מעביד', where: 'תלוש השכר ← "מעביד פנסיה" — לרוב 6.5%–7.5%' },
+      { label: 'פיצויים', where: 'תלוש השכר ← "פיצויים" — לרוב 8.33%' },
+      { label: 'דמי ניהול', where: 'הראל: דשבורד ← "פירוט עמלות" ← "דמי ניהול מצבירה" (בד״כ 0.1%–0.5%)' },
+      { label: 'מסלול השקעה', where: 'הראל: "מסלול" בכותרת דף הקרן. ברירת מחדל: "מסלול לפי גיל"' },
+    ],
+  },
+};
+
+// ── Hishtalmut ceiling (2024) ─────────────────────────────────────────────────
+/** Max salary for full tax exemption ~₪15,712/month; employer 7.5% + employee 2.5% = 10% */
+const HISH_CEILING_MONTHLY = 15_712 * 0.10; // ≈ ₪1,571/month
+
+/** Compound total return % given annualReturn % and years elapsed */
+function calcCompoundReturn(annualReturn: number, years: number): number {
+  return (Math.pow(1 + annualReturn / 100, years) - 1) * 100;
+}
+
+/** Project hishtalmut balance over the remaining part of the 6-year cycle.
+ *  yearsElapsed = how many years have already passed since openDate (can be fractional).
+ *  Labels reflect actual cycle-year numbers (שנה 1…6). */
+function projectHishtalmut(
+  balance: number,
+  monthlyDeposit: number,
+  annualRate: number,
+  yearsElapsed = 0,
+) {
+  const yearsDone = Math.floor(yearsElapsed);          // complete years already in
+  const yearsLeft = Math.max(1, 6 - yearsDone);        // remaining years to show
+  const months = yearsLeft * 12;
+  const r = (annualRate / 100) / 12;
+  let b = balance;
+  let cb = HISH_CEILING_MONTHLY * 12;
+  let p = balance;
+  const data: { label: string; יתרה: number; תקרה: number; הפרשה: number }[] = [];
+  for (let m = 0; m <= months; m++) {
+    if (m % 12 === 0) {
+      const cycleYear = yearsDone + m / 12;
+      const isToday = m === 0;
+      const label = isToday
+        ? (yearsDone === 0 ? 'היום' : `היום (שנה ${cycleYear})`)
+        : `שנה ${cycleYear}`;
+      data.push({ label, יתרה: Math.round(b), תקרה: Math.round(cb), הפרשה: Math.round(p) });
+    }
+    if (m < months) {
+      b  = b  * (1 + r) + monthlyDeposit;
+      cb += HISH_CEILING_MONTHLY;
+      p += monthlyDeposit;
+    }
+  }
+  return data;
+}
+
 // ── Pension projection ────────────────────────────────────────────────────────
 function projectPension(balance: number, monthlyTotal: number, yearsLeft: number, rate: number) {
   const monthlyRate = rate / 12;
   let b = balance;
-  const data = [{ year: 'היום', יתרה: Math.round(b) }];
+  let p = balance;
+  const data = [{ year: 'היום', יתרה: Math.round(b), הפרשה: Math.round(p) }];
   for (let y = 1; y <= yearsLeft; y++) {
-    for (let m = 0; m < 12; m++) b = b * (1 + monthlyRate) + monthlyTotal;
-    if (y % 5 === 0 || y === yearsLeft) data.push({ year: `+${y}`, יתרה: Math.round(b) });
+    for (let m = 0; m < 12; m++) {
+      b = b * (1 + monthlyRate) + monthlyTotal;
+      p += monthlyTotal;
+    }
+    if (y % 5 === 0 || y === yearsLeft) data.push({ year: `+${y}`, יתרה: Math.round(b), הפרשה: Math.round(p) });
   }
   return { finalBalance: b, data };
 }
@@ -56,27 +174,96 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
+// ── Explainer panel ────────────────────────────────────────────────────────────
+function FundExplainer({ type }: { type: keyof typeof FUND_EXPLAINERS }) {
+  const [open, setOpen] = useState(false);
+  const e = FUND_EXPLAINERS[type];
+  const colorMap: Record<string, string> = {
+    blue: 'border-blue-200 bg-blue-50 text-blue-800',
+    purple: 'border-purple-200 bg-purple-50 text-purple-800',
+    teal: 'border-teal-200 bg-teal-50 text-teal-800',
+    green: 'border-green-200 bg-green-50 text-green-800',
+  };
+  const badgeColor = colorMap[e.color] ?? colorMap.blue;
+  return (
+    <div className={`rounded-xl border text-sm ${badgeColor} overflow-hidden`}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-4 py-2 font-semibold"
+      >
+        <span className="flex items-center gap-2">
+          <span>{e.icon}</span>
+          <span>מה זה {e.title}?</span>
+        </span>
+        {open ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+      </button>
+      {open && (
+        <div className="px-4 pb-4 space-y-3 border-t border-current border-opacity-20">
+          <p className="mt-3 opacity-80">{e.what}</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <div className="font-semibold mb-1.5">✅ יתרונות</div>
+              <ul className="space-y-1 opacity-80">
+                {e.pros.map((p) => <li key={p} className="flex gap-1.5 text-xs"><span>•</span>{p}</li>)}
+              </ul>
+            </div>
+            <div>
+              <div className="font-semibold mb-1.5">⚠️ חסרונות</div>
+              <ul className="space-y-1 opacity-80">
+                {e.cons.map((c) => <li key={c} className="flex gap-1.5 text-xs"><span>•</span>{c}</li>)}
+              </ul>
+            </div>
+          </div>
+          {e.fields.length > 0 && (
+            <div>
+              <div className="font-semibold mb-1.5 flex items-center gap-1.5"><BookOpen size={13} /> איפה למצוא כל שדה?</div>
+              <div className="bg-white bg-opacity-50 rounded-lg divide-y divide-current divide-opacity-10 text-xs">
+                {e.fields.map((f) => (
+                  <div key={f.label} className="flex gap-2 px-3 py-2">
+                    <span className="font-semibold shrink-0 w-28">{f.label}</span>
+                    <span className="opacity-70">{f.where}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <div className="text-xs opacity-60 flex items-center gap-1.5"><ExternalLink size={11} /> מיקום: {e.where}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
-type Tab = 'savings' | 'gemel' | 'pension';
+type Tab = 'savings' | 'gemel' | 'hishtalmut' | 'pension';
 
 export default function Savings() {
   const { savings, addSavings, updateSavings, deleteSavings,
           gemel, addGemel, updateGemel, deleteGemel,
+          hishtalmut, addHishtalmut, updateHishtalmut, deleteHishtalmut,
           pension, updatePension } = useStore();
 
   const [tab, setTab] = useState<Tab>('savings');
 
   // ── Savings state ────────────────────────────────────────────────────────
-  const SAVINGS_BLANK = { bank: BANKS[0], name: '', amount: '', interestRate: '', maturityDate: '', openDate: new Date().toISOString().slice(0, 10), link: '' };
+  const SAVINGS_BLANK = { bank: BANKS[0], name: '', amount: '', interestRate: '', maturityDate: '', openDate: new Date().toISOString().slice(0, 10), link: '', logoUrl: '' };
   const [savingsAddModal, setSavingsAddModal] = useState(false);
   const [savingsEditItem, setSavingsEditItem] = useState<SavingsAccount | null>(null);
   const [savingsForm, setSavingsForm] = useState(SAVINGS_BLANK);
 
   // ── Gemel state ──────────────────────────────────────────────────────────
-  const GEMEL_BLANK = { name: '', company: GEMEL_COMPANIES[0], balance: '', track: GEMEL_TRACKS[0], managementFee: '', annualReturn: '', totalReturn: '' };
+  const GEMEL_BLANK = { name: '', company: GEMEL_COMPANIES[0], balance: '', track: GEMEL_TRACKS[0], managementFee: '', depositFee: '', annualReturn: '', employeeContribution: '', employerContribution: '', salary: '', link: '', logoUrl: '' };
   const [gemelAddModal, setGemelAddModal] = useState(false);
   const [gemelEditId, setGemelEditId] = useState<string | null>(null);
   const [gemelForm, setGemelForm] = useState(GEMEL_BLANK);
+  const [gemelYears, setGemelYears] = useState(10);
+
+  // ── Hishtalmut state ─────────────────────────────────────────────────────
+  const HISH_BLANK = { name: '', company: FUND_COMPANIES[0], balance: '', track: HISHTALMUT_TRACKS[0], managementFee: '', annualReturn: '', employeeContribution: '2.5', employerContribution: '7.5', salary: '', openDate: '', link: '', logoUrl: '' };
+  const [hishAddModal, setHishAddModal] = useState(false);
+  const [hishEditId, setHishEditId] = useState<string | null>(null);
+  const [hishForm, setHishForm] = useState(HISH_BLANK);
+  const [showHishCeiling, setShowHishCeiling] = useState(true);
 
   // ── Pension state ────────────────────────────────────────────────────────
   const pensionFund = pension[0];
@@ -86,7 +273,7 @@ export default function Savings() {
     name: '', company: '', balance: '', track: '', salary: '',
     employeeContribution: '', employerContribution: '',
     compensationContribution: '', managementFee: '',
-    expectedReturn: '', retirementAge: '', birthYear: '',
+    expectedReturn: '', retirementAge: '', birthYear: '', link: '', logoUrl: '',
   });
 
   // ── Savings helpers ──────────────────────────────────────────────────────
@@ -103,15 +290,15 @@ export default function Savings() {
   }
   function openSavingsEdit(s: SavingsAccount) {
     setSavingsEditItem(s);
-    setSavingsForm({ bank: s.bank, name: s.name, amount: String(s.amount), interestRate: String(s.interestRate), maturityDate: s.maturityDate, openDate: s.openDate, link: s.link ?? '' });
+    setSavingsForm({ bank: s.bank, name: s.name, amount: String(s.amount), interestRate: String(s.interestRate), maturityDate: s.maturityDate, openDate: s.openDate, link: s.link ?? '', logoUrl: s.logoUrl ?? '' });
   }
   function saveSavingsEdit() {
     if (!savingsEditItem) return;
-    updateSavings(savingsEditItem.id, { bank: savingsForm.bank, name: savingsForm.name, amount: +savingsForm.amount, interestRate: +savingsForm.interestRate, maturityDate: savingsForm.maturityDate, openDate: savingsForm.openDate, link: savingsForm.link || undefined });
+    updateSavings(savingsEditItem.id, { bank: savingsForm.bank, name: savingsForm.name, amount: +savingsForm.amount, interestRate: +savingsForm.interestRate, maturityDate: savingsForm.maturityDate, openDate: savingsForm.openDate, link: savingsForm.link || undefined, logoUrl: savingsForm.logoUrl || undefined });
     setSavingsEditItem(null);
   }
   function addSavingsAccount() {
-    addSavings({ bank: savingsForm.bank, name: savingsForm.name, amount: +savingsForm.amount, interestRate: +savingsForm.interestRate, maturityDate: savingsForm.maturityDate, openDate: savingsForm.openDate, open: true, link: savingsForm.link || undefined });
+    addSavings({ bank: savingsForm.bank, name: savingsForm.name, amount: +savingsForm.amount, interestRate: +savingsForm.interestRate, maturityDate: savingsForm.maturityDate, openDate: savingsForm.openDate, open: true, link: savingsForm.link || undefined, logoUrl: savingsForm.logoUrl || undefined });
     setSavingsAddModal(false);
     setSavingsForm(SAVINGS_BLANK);
   }
@@ -119,23 +306,89 @@ export default function Savings() {
   // ── Gemel helpers ────────────────────────────────────────────────────────
   const totalGemel = gemel.reduce((a, g) => a + g.balance, 0);
   const avgGemelReturn = gemel.length > 0 ? gemel.reduce((a, g) => a + g.annualReturn, 0) / gemel.length : 0;
-  const gemelMonths = ['נוב', 'דצ', 'ינו', 'פב', 'מר', 'אפ', 'מא'];
-  const gemelChartData = gemelMonths.map((m, i) => ({ month: m, יתרה: Math.round(totalGemel * (0.88 + i * 0.02)) }));
+  // Weighted-average net rate (return minus management fee), weighted by balance
+  const avgGemelNetRate = totalGemel > 0
+    ? gemel.reduce((a, g) => a + Math.max(0, g.annualReturn - g.managementFee) * g.balance, 0) / totalGemel
+    : 0;
+  // Total monthly deposit across all gemel funds
+  const totalGemelMonthlyDep = gemel.reduce((a, g) =>
+    a + (g.salary > 0 ? g.salary * ((g.employeeContribution + g.employerContribution) / 100) : 0), 0);
+  // Projection, yearly data points
+  const gemelChartData = (() => {
+    const r = (avgGemelNetRate / 100) / 12;
+    let b = totalGemel;
+    let p = totalGemel;
+    const pts: { year: string; יתרה: number; הפרשה: number }[] = [{ year: 'היום', יתרה: Math.round(b), הפרשה: Math.round(p) }];
+    for (let y = 1; y <= gemelYears; y++) {
+      for (let m = 0; m < 12; m++) {
+        b = b * (1 + r) + totalGemelMonthlyDep;
+        p += totalGemelMonthlyDep;
+      }
+      pts.push({ year: `+${y}`, יתרה: Math.round(b), הפרשה: Math.round(p) });
+    }
+    return pts;
+  })();
 
   function openGemelEdit(g: GemelFund) {
     setGemelEditId(g.id);
-    setGemelForm({ name: g.name, company: g.company, balance: String(g.balance), track: g.track, managementFee: String(g.managementFee), annualReturn: String(g.annualReturn), totalReturn: String(g.totalReturn) });
+    setGemelForm({ name: g.name, company: g.company, balance: String(g.balance), track: g.track, managementFee: String(g.managementFee), depositFee: String(g.depositFee ?? 0), annualReturn: String(g.annualReturn), employeeContribution: String(g.employeeContribution ?? ''), employerContribution: String(g.employerContribution ?? ''), salary: String(g.salary ?? ''), link: g.link ?? '', logoUrl: g.logoUrl ?? '' });
   }
   function saveGemelEdit() {
     if (!gemelEditId) return;
-    updateGemel(gemelEditId, { name: gemelForm.name, company: gemelForm.company, balance: +gemelForm.balance, track: gemelForm.track, managementFee: +gemelForm.managementFee, annualReturn: +gemelForm.annualReturn, totalReturn: +gemelForm.totalReturn });
+    updateGemel(gemelEditId, { name: gemelForm.name, company: gemelForm.company, balance: +gemelForm.balance, track: gemelForm.track, managementFee: +gemelForm.managementFee, depositFee: +gemelForm.depositFee, annualReturn: +gemelForm.annualReturn, employeeContribution: +gemelForm.employeeContribution || 0, employerContribution: +gemelForm.employerContribution || 0, salary: +gemelForm.salary || 0, link: gemelForm.link || undefined, logoUrl: gemelForm.logoUrl || undefined });
     setGemelEditId(null);
   }
   function addGemelFund() {
-    addGemel({ name: gemelForm.name, company: gemelForm.company, balance: +gemelForm.balance, track: gemelForm.track, managementFee: +gemelForm.managementFee, annualReturn: +gemelForm.annualReturn, totalReturn: +gemelForm.totalReturn });
+    addGemel({ name: gemelForm.name, company: gemelForm.company, balance: +gemelForm.balance, track: gemelForm.track, managementFee: +gemelForm.managementFee, depositFee: +gemelForm.depositFee, annualReturn: +gemelForm.annualReturn, employeeContribution: +gemelForm.employeeContribution || 0, employerContribution: +gemelForm.employerContribution || 0, salary: +gemelForm.salary || 0, link: gemelForm.link || undefined, logoUrl: gemelForm.logoUrl || undefined });
     setGemelAddModal(false);
     setGemelForm(GEMEL_BLANK);
   }
+
+  // ── Hishtalmut helpers ────────────────────────────────────────────────────
+  const totalHishtalmut = hishtalmut.reduce((a, h) => a + h.balance, 0);
+
+  function openHishEdit(h: HishtalmutFund) {
+    setHishEditId(h.id);
+    setHishForm({ name: h.name, company: h.company, balance: String(h.balance), track: h.track, managementFee: String(h.managementFee), annualReturn: String(h.annualReturn), employeeContribution: String(h.employeeContribution), employerContribution: String(h.employerContribution), salary: String(h.salary ?? ''), openDate: h.openDate ?? '', link: h.link ?? '', logoUrl: h.logoUrl ?? '' });
+  }
+  function saveHishEdit() {
+    if (!hishEditId) return;
+    updateHishtalmut(hishEditId, { name: hishForm.name, company: hishForm.company, balance: +hishForm.balance, track: hishForm.track, managementFee: +hishForm.managementFee, annualReturn: +hishForm.annualReturn, employeeContribution: +hishForm.employeeContribution, employerContribution: +hishForm.employerContribution, salary: +hishForm.salary || 0, openDate: hishForm.openDate || undefined, link: hishForm.link || undefined, logoUrl: hishForm.logoUrl || undefined });
+    setHishEditId(null);
+  }
+  function addHishFund() {
+    addHishtalmut({ name: hishForm.name, company: hishForm.company, balance: +hishForm.balance, track: hishForm.track, managementFee: +hishForm.managementFee, annualReturn: +hishForm.annualReturn, employeeContribution: +hishForm.employeeContribution, employerContribution: +hishForm.employerContribution, salary: +hishForm.salary || 0, openDate: hishForm.openDate || undefined, link: hishForm.link || undefined, logoUrl: hishForm.logoUrl || undefined });
+    setHishAddModal(false);
+    setHishForm(HISH_BLANK);
+  }
+
+  // Hishtalmut derived
+  function hishUnlockDate(h: HishtalmutFund): Date | null {
+    if (!h.openDate) return null;
+    const d = new Date(h.openDate);
+    d.setFullYear(d.getFullYear() + 6);
+    return d;
+  }
+  function hishMonthlyDeposit(h: HishtalmutFund) {
+    if (!h.salary) return 0;
+    return h.salary * ((h.employeeContribution + h.employerContribution) / 100);
+  }
+
+  // Hishtalmut chart data
+  const totalHishMonthlyDep = hishtalmut.reduce((a, h) => a + hishMonthlyDeposit(h), 0);
+  const avgHishRate = totalHishtalmut > 0
+    ? hishtalmut.reduce((a, h) => a + h.annualReturn * h.balance, 0) / totalHishtalmut
+    : 0;
+  // Use the minimum elapsed years (newest fund) so the chart covers the full remaining cycle
+  const hishYearsElapsed = (() => {
+    const vals = hishtalmut
+      .filter((h) => !!h.openDate)
+      .map((h) => (Date.now() - new Date(h.openDate!).getTime()) / (365.25 * 24 * 3600 * 1000));
+    return vals.length > 0 ? Math.min(...vals) : 0;
+  })();
+  const hishChartData = hishtalmut.length > 0
+    ? projectHishtalmut(totalHishtalmut, totalHishMonthlyDep, avgHishRate, hishYearsElapsed)
+    : [];
 
   // ── Pension helpers ──────────────────────────────────────────────────────
   function openPensionEdit() {
@@ -150,6 +403,7 @@ export default function Savings() {
       expectedReturn: String(pensionFund.expectedReturn ?? 6),
       retirementAge: String(pensionFund.retirementAge),
       birthYear: String(pensionFund.birthYear),
+      link: pensionFund.link ?? '', logoUrl: pensionFund.logoUrl ?? '',
     });
     setPensionEditModal(true);
   }
@@ -165,6 +419,7 @@ export default function Savings() {
       expectedReturn: +pensionEditForm.expectedReturn,
       retirementAge: +pensionEditForm.retirementAge,
       birthYear: +pensionEditForm.birthYear,
+      link: pensionEditForm.link || undefined, logoUrl: pensionEditForm.logoUrl || undefined,
     });
     setPensionEditModal(false);
   }
@@ -191,13 +446,14 @@ export default function Savings() {
   const simMonthlyPension = simBalance / (25 * 12);
 
   // ── Top-level KPIs ───────────────────────────────────────────────────────
-  const totalAll = totalSavings + totalGemel + (pf?.balance ?? 0);
+  const totalAll = totalSavings + totalGemel + totalHishtalmut + (pf?.balance ?? 0);
 
   // ── Tab button ───────────────────────────────────────────────────────────
   const tabs: { id: Tab; label: string; count?: string }[] = [
-    { id: 'savings', label: 'פיקדונות', count: fmtCurrency(totalSavings) },
-    { id: 'gemel',   label: 'קופות גמל', count: fmtCurrency(totalGemel) },
-    { id: 'pension', label: 'פנסיה',     count: pf ? fmtCurrency(pf.balance) : undefined },
+    { id: 'savings',     label: 'פיקדונות',       count: fmtCurrency(totalSavings) },
+    { id: 'gemel',       label: 'קופות גמל',      count: fmtCurrency(totalGemel) },
+    { id: 'hishtalmut',  label: 'קרן השתלמות',    count: fmtCurrency(totalHishtalmut) },
+    { id: 'pension',     label: 'פנסיה',           count: pf ? fmtCurrency(pf.balance) : undefined },
   ];
 
   // ── Shared form fields helper ─────────────────────────────────────────────
@@ -220,19 +476,24 @@ export default function Savings() {
       </div>
 
       {/* Summary KPI row */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card className={`cursor-pointer transition-all ${tab === 'savings' ? 'ring-2 ring-blue-400 ring-offset-1' : ''}`} onClick={() => setTab('savings')}>
-          <div className="text-xs font-medium text-slate-400 uppercase tracking-wide">פיקדונות</div>
+          <div className="text-xs font-medium text-slate-400 uppercase tracking-wide">🏦 פיקדונות</div>
           <div className="text-2xl font-bold text-slate-900 mt-1">{fmtCurrency(totalSavings)}</div>
           <div className="text-xs text-slate-400">{openSavings.length} פעילים • {fmt(avgRate, 1)}% ריבית ממוצעת</div>
         </Card>
         <Card className={`cursor-pointer transition-all ${tab === 'gemel' ? 'ring-2 ring-purple-400 ring-offset-1' : ''}`} onClick={() => setTab('gemel')}>
-          <div className="text-xs font-medium text-slate-400 uppercase tracking-wide">קופות גמל</div>
+          <div className="text-xs font-medium text-slate-400 uppercase tracking-wide">📈 קופות גמל</div>
           <div className="text-2xl font-bold text-purple-600 mt-1">{fmtCurrency(totalGemel)}</div>
           <div className="text-xs text-slate-400">{gemel.length} קרנות • {fmt(avgGemelReturn, 1)}% תשואה ממוצעת</div>
         </Card>
+        <Card className={`cursor-pointer transition-all ${tab === 'hishtalmut' ? 'ring-2 ring-teal-400 ring-offset-1' : ''}`} onClick={() => setTab('hishtalmut')}>
+          <div className="text-xs font-medium text-slate-400 uppercase tracking-wide">🎓 קרן השתלמות</div>
+          <div className="text-2xl font-bold text-teal-600 mt-1">{fmtCurrency(totalHishtalmut)}</div>
+          <div className="text-xs text-slate-400">{hishtalmut.length} קרנות</div>
+        </Card>
         <Card className={`cursor-pointer transition-all ${tab === 'pension' ? 'ring-2 ring-green-400 ring-offset-1' : ''}`} onClick={() => setTab('pension')}>
-          <div className="text-xs font-medium text-slate-400 uppercase tracking-wide">פנסיה</div>
+          <div className="text-xs font-medium text-slate-400 uppercase tracking-wide">🧓 פנסיה</div>
           <div className="text-2xl font-bold text-green-600 mt-1">{pf ? fmtCurrency(pf.balance) : '—'}</div>
           <div className="text-xs text-slate-400">{pf ? `${yearsLeft} שנים לפרישה` : 'לא הוגדר'}</div>
         </Card>
@@ -261,12 +522,15 @@ export default function Savings() {
       ══════════════════════════════════════════════════════════════════ */}
       {tab === 'savings' && (
         <div className="space-y-4 animate-fade-in">
-          <div className="flex justify-between items-center">
-            <p className="text-sm text-slate-500">{fmtCurrency(openSavings.reduce((a, s) => a + calcAccruedInterest(s), 0))} ריבית שנצברה</p>
-            <button onClick={() => setSavingsAddModal(true)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 rounded-xl text-sm text-white hover:bg-blue-700">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1">
+              <FundExplainer type="savings" />
+            </div>
+            <button onClick={() => setSavingsAddModal(true)} className="shrink-0 flex items-center gap-2 px-4 py-2 bg-blue-600 rounded-xl text-sm text-white hover:bg-blue-700">
               <Plus size={16} /> הוסף פיקדון
             </button>
           </div>
+          <p className="text-sm text-slate-500">{fmtCurrency(openSavings.reduce((a, s) => a + calcAccruedInterest(s), 0))} ריבית שנצברה</p>
 
           {savings.map((s) => {
             const dtm = daysToMaturity(s.maturityDate);
@@ -288,17 +552,21 @@ export default function Savings() {
                     <div className="text-sm text-green-600">{fmt(s.interestRate, 1)}% שנתי</div>
                   </div>
                 </div>
-                <div className="grid grid-cols-4 gap-4 mt-4 pt-4 border-t border-slate-100 text-sm">
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mt-4 pt-4 border-t border-slate-100 text-sm">
                   <div><div className="text-slate-400">תאריך פתיחה</div><div className="font-medium text-slate-700">{fmtDate(s.openDate)}</div></div>
                   <div><div className="text-slate-400">תאריך פירעון</div><div className="font-medium text-slate-700">{fmtDate(s.maturityDate)}</div></div>
                   <div><div className="text-slate-400">ריבית שנצברה</div><div className="font-medium text-green-600">{fmtCurrency(accrued)}</div></div>
                   <div className="flex gap-2 flex-wrap items-center">
-                    {s.link && (
+                    {s.logoUrl && s.link ? (
+                      <a href={s.link} target="_blank" rel="noopener noreferrer" className="shrink-0 transition-transform hover:scale-105">
+                        <img src={s.logoUrl} alt="Logo" className="h-10 object-contain rounded" />
+                      </a>
+                    ) : s.link ? (
                       <a href={s.link} target="_blank" rel="noopener noreferrer"
                         className="text-xs px-3 py-1.5 border border-blue-200 text-blue-600 rounded-lg hover:bg-blue-50 flex items-center gap-1">
                         <ExternalLink size={11} /> פירוט
                       </a>
-                    )}
+                    ) : null}
                     <button onClick={() => openSavingsEdit(s)} className="text-xs px-3 py-1.5 border border-slate-200 rounded-lg hover:bg-slate-50 flex items-center gap-1">
                       <Pencil size={11} /> ערוך
                     </button>
@@ -319,22 +587,47 @@ export default function Savings() {
       ══════════════════════════════════════════════════════════════════ */}
       {tab === 'gemel' && (
         <div className="space-y-4 animate-fade-in">
-          <div className="flex justify-between items-center">
-            <p className="text-sm text-slate-500">דמי ניהול ממוצעים: {fmt(gemel.length > 0 ? gemel.reduce((a, g) => a + g.managementFee, 0) / gemel.length : 0, 2)}%</p>
-            <button onClick={() => setGemelAddModal(true)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 rounded-xl text-sm text-white hover:bg-blue-700">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1">
+              <FundExplainer type="gemel" />
+            </div>
+            <button onClick={() => setGemelAddModal(true)} className="shrink-0 flex items-center gap-2 px-4 py-2 bg-blue-600 rounded-xl text-sm text-white hover:bg-blue-700">
               <Plus size={16} /> הוסף קרן
             </button>
           </div>
+          <p className="text-sm text-slate-500">דמי ניהול ממוצעים: {fmt(gemel.length > 0 ? gemel.reduce((a, g) => a + g.managementFee, 0) / gemel.length : 0, 2)}%</p>
 
           {totalGemel > 0 && (
             <Card>
-              <h2 className="font-semibold text-slate-900 mb-4">יתרה לאורך זמן</h2>
-              <ResponsiveContainer width="100%" height={180}>
+              <div className="flex items-center justify-between mb-1">
+                <h2 className="font-semibold text-slate-900">תחזית {gemelYears} שנים</h2>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-400">תקופה:</span>
+                  <select 
+                    value={gemelYears} 
+                    onChange={(e) => setGemelYears(Number(e.target.value))}
+                    className="text-xs border border-slate-200 rounded-lg py-1 px-2 bg-slate-50 focus:ring-blue-500 focus:border-blue-500 cursor-pointer"
+                  >
+                    <option value={5}>5 שנים</option>
+                    <option value={10}>10 שנים</option>
+                    <option value={15}>15 שנים</option>
+                    <option value={20}>20 שנים</option>
+                    <option value={30}>30 שנים</option>
+                  </select>
+                </div>
+              </div>
+              <p className="text-xs text-slate-400 mb-4">
+                תשואה נטו {fmt(avgGemelNetRate, 1)}%
+                {totalGemelMonthlyDep > 0 && ` • הפרשה חודשית ${fmtCurrency(totalGemelMonthlyDep)}`}
+              </p>
+              <ResponsiveContainer width="100%" height={200}>
                 <AreaChart data={gemelChartData}>
-                  <XAxis dataKey="month" tick={{ fontSize: 12 }} />
+                  <XAxis dataKey="year" tick={{ fontSize: 12 }} />
                   <YAxis tickFormatter={(v) => `₪${(v / 1000).toFixed(0)}k`} tick={{ fontSize: 12 }} />
                   <Tooltip formatter={(v: unknown) => fmtCurrency(v as number)} />
-                  <Area type="monotone" dataKey="יתרה" stroke="#8b5cf6" fill="#8b5cf620" strokeWidth={2} />
+                  <Legend />
+                  <Area type="monotone" dataKey="יתרה" name="צבירה כוללת" stroke="#8b5cf6" fill="#8b5cf620" strokeWidth={2} />
+                  <Area type="monotone" dataKey="הפרשה" name="הפרשות מצטברות" stroke="#10b981" fill="#10b98120" strokeWidth={2} />
                 </AreaChart>
               </ResponsiveContainer>
             </Card>
@@ -348,7 +641,15 @@ export default function Savings() {
                   <div className="text-sm text-slate-500">{g.company} • {g.track}</div>
                 </div>
                 <div className="flex items-center gap-3">
-                  {COMPANY_LINKS[g.company] && (
+                  {g.logoUrl && g.link ? (
+                    <a href={g.link} target="_blank" rel="noopener noreferrer" className="shrink-0 transition-transform hover:scale-105">
+                      <img src={g.logoUrl} alt="Logo" className="h-10 object-contain rounded" />
+                    </a>
+                  ) : g.link ? (
+                    <a href={g.link} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-700">
+                      <ExternalLink size={16} />
+                    </a>
+                  ) : COMPANY_LINKS[g.company] && (
                     <a href={COMPANY_LINKS[g.company]} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-700">
                       <ExternalLink size={16} />
                     </a>
@@ -356,11 +657,29 @@ export default function Savings() {
                   <div className="text-xl font-bold text-slate-900">{fmtCurrency(g.balance)}</div>
                 </div>
               </div>
-              <div className="grid grid-cols-4 gap-4 mt-4 pt-4 border-t border-slate-100 text-sm">
-                <div><div className="text-slate-400">דמי ניהול</div><div className="font-medium">{fmt(g.managementFee, 2)}%</div></div>
-                <div><div className="text-slate-400">תשואה שנתית</div><div className={`font-medium ${g.annualReturn >= 0 ? 'text-green-600' : 'text-red-500'}`}>{g.annualReturn >= 0 ? '+' : ''}{fmt(g.annualReturn, 1)}%</div></div>
-                <div><div className="text-slate-400">תשואה מצטברת</div><div className={`font-medium ${g.totalReturn >= 0 ? 'text-green-600' : 'text-red-500'}`}>{g.totalReturn >= 0 ? '+' : ''}{fmt(g.totalReturn, 1)}%</div></div>
-                <div className="flex gap-2 items-end">
+              <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mt-4 pt-4 border-t border-slate-100 text-sm">
+                <div>
+                  <div className="text-slate-400">דמי ניהול מצבירה</div>
+                  <div className="font-medium text-red-500">{fmt(g.managementFee, 2)}%</div>
+                  <div className="text-xs text-slate-400">שנתי מהיתרה</div>
+                </div>
+                <div>
+                  <div className="text-slate-400">דמי ניהול מהפקדות</div>
+                  <div className="font-medium text-red-500">{fmt(g.depositFee ?? 0, 2)}%</div>
+                  <div className="text-xs text-slate-400">מכל הפקדה</div>
+                </div>
+                <div>
+                  <div className="text-slate-400">תשואה</div>
+                  <div className={`font-medium ${g.annualReturn >= 0 ? 'text-green-600' : 'text-red-500'}`}>{g.annualReturn >= 0 ? '+' : ''}{fmt(g.annualReturn, 1)}%</div>
+                </div>
+                <div>
+                  <div className="text-slate-400">הפרשה חודשית</div>
+                  <div className="font-medium text-purple-700">
+                    {g.salary > 0 ? fmtCurrency(g.salary * ((g.employeeContribution + g.employerContribution) / 100)) : '—'}
+                  </div>
+                  {g.salary > 0 && <div className="text-xs text-slate-400">{g.employeeContribution}%+{g.employerContribution}%</div>}
+                </div>
+                <div className="flex gap-2 items-end flex-wrap">
                   <button onClick={() => openGemelEdit(g)} className="text-xs px-3 py-1.5 border border-slate-200 rounded-lg hover:bg-slate-50 flex items-center gap-1">
                     <Pencil size={11} /> ערוך
                   </button>
@@ -373,21 +692,173 @@ export default function Savings() {
       )}
 
       {/* ══════════════════════════════════════════════════════════════════
+          TAB: קרן השתלמות
+      ══════════════════════════════════════════════════════════════════ */}
+      {tab === 'hishtalmut' && (
+        <div className="space-y-4 animate-fade-in">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1">
+              <FundExplainer type="hishtalmut" />
+            </div>
+            <button onClick={() => setHishAddModal(true)} className="shrink-0 flex items-center gap-2 px-4 py-2 bg-teal-600 rounded-xl text-sm text-white hover:bg-teal-700">
+              <Plus size={16} /> הוסף קרן השתלמות
+            </button>
+          </div>
+          <p className="text-sm text-slate-500">
+            {hishtalmut.length > 0
+              ? `${hishtalmut.length} קרנות • דמי ניהול ממוצעים ${fmt(hishtalmut.reduce((a, h) => a + h.managementFee, 0) / hishtalmut.length, 2)}%`
+              : 'הוסף את קרן ההשתלמות שלך'}
+          </p>
+
+          {hishtalmut.length > 0 && (
+            <Card>
+              <div className="flex items-center justify-between mb-1">
+                <h2 className="font-semibold text-slate-900">תחזית 6 שנים</h2>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-slate-400">תקרת מס</span>
+                  <button
+                    onClick={() => setShowHishCeiling((v) => !v)}
+                    className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border transition-colors ${showHishCeiling ? 'bg-teal-50 text-teal-600 border-teal-200' : 'bg-slate-50 text-slate-400 border-slate-200'}`}
+                  >
+                    {showHishCeiling ? <Eye size={12} /> : <EyeOff size={12} />}
+                    {showHishCeiling ? 'הסתר' : 'הצג'}
+                  </button>
+                </div>
+              </div>
+              <p className="text-xs text-slate-400 mb-4">
+                תשואה שנתית {fmt(avgHishRate, 1)}% • הפרשה חודשית {fmtCurrency(totalHishMonthlyDep)} • תקרת מס ≈{fmtCurrency(HISH_CEILING_MONTHLY)}/חודש
+              </p>
+              <ResponsiveContainer width="100%" height={200}>
+                <AreaChart data={hishChartData}>
+                  <XAxis dataKey="label" tick={{ fontSize: 12 }} />
+                  <YAxis tickFormatter={(v) => `₪${(v / 1000).toFixed(0)}k`} tick={{ fontSize: 12 }} />
+                  <Tooltip formatter={(v: unknown) => fmtCurrency(v as number)} />
+                  <Legend />
+                  <Area type="monotone" dataKey="יתרה" name="צבירה כוללת" stroke="#0d9488" fill="#0d948820" strokeWidth={2} dot={{ r: 4 }} />
+                  <Area type="monotone" dataKey="הפרשה" name="הפרשות מצטברות" stroke="#3b82f6" fill="#3b82f620" strokeWidth={2} dot={{ r: 4 }} />
+                  {showHishCeiling && (
+                    <Line type="monotone" dataKey="תקרה" name="תקרת מס" stroke="#94a3b8" strokeWidth={1.5} strokeDasharray="5 5" dot={false} />
+                  )}
+                </AreaChart>
+              </ResponsiveContainer>
+            </Card>
+          )}
+
+          {hishtalmut.map((h) => {
+            const unlock = hishUnlockDate(h);
+            const now = new Date();
+            const isUnlocked = unlock ? unlock <= now : null;
+            const daysToUnlock = unlock && !isUnlocked ? Math.ceil((unlock.getTime() - now.getTime()) / 86400_000) : null;
+            const monthlyDep = hishMonthlyDeposit(h);
+            const yearsElapsed = h.openDate ? (now.getTime() - new Date(h.openDate).getTime()) / (365.25 * 24 * 3600 * 1000) : 0;
+            const compoundReturn = h.openDate && yearsElapsed > 0 ? calcCompoundReturn(h.annualReturn, yearsElapsed) : null;
+
+            return (
+              <Card key={h.id}>
+                <div className="flex items-start justify-between">
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                      <h3 className="font-semibold text-slate-900">{h.name}</h3>
+                      {isUnlocked === true && <Badge variant="green"><GraduationCap size={10} className="ml-1" />נזיל</Badge>}
+                      {isUnlocked === false && daysToUnlock !== null && (
+                        <Badge variant={daysToUnlock <= 365 ? 'amber' : 'blue'}>
+                          {daysToUnlock <= 365 ? `נפתח בעוד ${daysToUnlock} ימים` : `נפתח ${unlock!.toLocaleDateString('he-IL', { year: 'numeric', month: 'short' })}`}
+                        </Badge>
+                      )}
+                      {isUnlocked === null && <Badge variant="gray">תאריך פתיחה לא הוגדר</Badge>}
+                    </div>
+                    <div className="text-sm text-slate-500">{h.company} • {h.track}</div>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {h.logoUrl && h.link ? (
+                      <a href={h.link} target="_blank" rel="noopener noreferrer" className="shrink-0 transition-transform hover:scale-105">
+                        <img src={h.logoUrl} alt="Logo" className="h-10 object-contain rounded" />
+                      </a>
+                    ) : (
+                      <>
+                        {COMPANY_LINKS[h.company] && (
+                          <a href={COMPANY_LINKS[h.company]} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-700">
+                            <ExternalLink size={16} />
+                          </a>
+                        )}
+                        {h.link && (
+                          <a href={h.link} target="_blank" rel="noopener noreferrer"
+                            className="text-xs px-3 py-1.5 border border-blue-200 text-blue-600 rounded-lg hover:bg-blue-50 flex items-center gap-1">
+                            <ExternalLink size={11} /> פירוט
+                          </a>
+                        )}
+                      </>
+                    )}
+                    <div className="text-xl font-bold text-teal-700">{fmtCurrency(h.balance)}</div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mt-4 pt-4 border-t border-slate-100 text-sm">
+                  <div><div className="text-slate-400">דמי ניהול</div><div className="font-medium text-red-500">{fmt(h.managementFee, 2)}%</div></div>
+                  <div><div className="text-slate-400">תשואה שנתית</div><div className={`font-medium ${h.annualReturn >= 0 ? 'text-green-600' : 'text-red-500'}`}>{h.annualReturn >= 0 ? '+' : ''}{fmt(h.annualReturn, 1)}%</div></div>
+                  <div>
+                    <div className="text-slate-400">תשואה מצטברת</div>
+                    <div className={`font-medium ${compoundReturn !== null && compoundReturn >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                      {compoundReturn !== null ? `${compoundReturn >= 0 ? '+' : ''}${fmt(compoundReturn, 1)}%` : '—'}
+                    </div>
+                    {h.openDate && yearsElapsed > 0 && <div className="text-xs text-slate-400">{fmt(yearsElapsed, 1)} שנים</div>}
+                  </div>
+                  <div>
+                    <div className="text-slate-400">הפרשה חודשית</div>
+                    <div className="font-medium text-teal-700">
+                      {monthlyDep > 0 ? fmtCurrency(monthlyDep) : '—'}
+                    </div>
+                    {h.salary > 0 && <div className="text-xs text-slate-400">{h.employeeContribution}%+{h.employerContribution}%</div>}
+                  </div>
+                  <div className="flex gap-2 items-end flex-wrap">
+                    <button onClick={() => openHishEdit(h)} className="text-xs px-3 py-1.5 border border-slate-200 rounded-lg hover:bg-slate-50 flex items-center gap-1">
+                      <Pencil size={11} /> ערוך
+                    </button>
+                    <button onClick={() => deleteHishtalmut(h.id)} className="text-xs px-3 py-1.5 border border-red-100 text-red-500 rounded-lg hover:bg-red-50">מחק</button>
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ══════════════════════════════════════════════════════════════════
           TAB: פנסיה
       ══════════════════════════════════════════════════════════════════ */}
       {tab === 'pension' && (
-        <div className="space-y-5 animate-fade-in">
+        <div className="space-y-4 animate-fade-in">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1">
+              <FundExplainer type="pension" />
+            </div>
+            {pf && (
+              <button onClick={openPensionEdit} className="shrink-0 flex items-center gap-1.5 text-sm px-4 py-2 border border-slate-200 rounded-xl hover:bg-slate-50 text-slate-600">
+                <Pencil size={14} /> ערוך הגדרות
+              </button>
+            )}
+          </div>
           {!pf ? (
             <div className="text-slate-500 text-center py-16">אין נתוני פנסיה</div>
           ) : (
             <>
-              <div className="flex justify-end">
-                <button onClick={openPensionEdit} className="flex items-center gap-1.5 text-sm px-4 py-2 border border-slate-200 rounded-xl hover:bg-slate-50 text-slate-600">
-                  <Pencil size={14} /> ערוך הגדרות
-                </button>
-              </div>
 
-              <div className="text-sm text-slate-500">{pf.name} • {pf.company} • {pf.track}</div>
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-slate-500">{pf.name} • {pf.company} • {pf.track}</div>
+                {pf.logoUrl && pf.link ? (
+                  <a href={pf.link} target="_blank" rel="noopener noreferrer" className="shrink-0 transition-transform hover:scale-105">
+                    <img src={pf.logoUrl} alt="Logo" className="h-10 object-contain rounded" />
+                  </a>
+                ) : pf.link ? (
+                  <a href={pf.link} target="_blank" rel="noopener noreferrer"
+                    className="text-xs px-3 py-1.5 border border-blue-200 text-blue-600 rounded-lg hover:bg-blue-50 flex items-center gap-1">
+                    <ExternalLink size={11} /> פירוט
+                  </a>
+                ) : COMPANY_LINKS[pf.company] ? (
+                  <a href={COMPANY_LINKS[pf.company]} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-700">
+                    <ExternalLink size={16} />
+                  </a>
+                ) : null}
+              </div>
 
               {/* KPIs */}
               <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -408,12 +879,14 @@ export default function Savings() {
                     <XAxis dataKey="year" tick={{ fontSize: 12 }} />
                     <YAxis tickFormatter={(v) => `₪${(v / 1000).toFixed(0)}k`} tick={{ fontSize: 12 }} />
                     <Tooltip formatter={(v: unknown) => fmtCurrency(v as number)} />
-                    <Area type="monotone" dataKey="יתרה" stroke="#8b5cf6" fill="#8b5cf620" strokeWidth={2} />
+                    <Legend />
+                    <Area type="monotone" dataKey="יתרה" name="צבירה כוללת" stroke="#8b5cf6" fill="#8b5cf620" strokeWidth={2} />
+                    <Area type="monotone" dataKey="הפרשה" name="הפרשות מצטברות" stroke="#f59e0b" fill="#f59e0b20" strokeWidth={2} />
                   </AreaChart>
                 </ResponsiveContainer>
               </Card>
 
-              <div className="grid grid-cols-2 gap-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {/* Contribution breakdown */}
                 <Card>
                   <h2 className="font-semibold text-slate-900 mb-4">פירוט הפרשות חודשיות</h2>
@@ -502,6 +975,23 @@ export default function Savings() {
         </button>
       </Modal>
 
+      {/* MODALS — Hishtalmut */}
+      <Modal open={hishAddModal} onClose={() => setHishAddModal(false)} title="הוסף קרן השתלמות">
+        <HishtalmutForm form={hishForm} setForm={setHishForm} companies={FUND_COMPANIES} tracks={HISHTALMUT_TRACKS} />
+        <button onClick={addHishFund} disabled={!hishForm.name || !hishForm.balance}
+          className="w-full mt-4 bg-teal-600 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-teal-700 disabled:opacity-40">
+          הוסף קרן
+        </button>
+      </Modal>
+
+      <Modal open={!!hishEditId} onClose={() => setHishEditId(null)} title="ערוך קרן השתלמות">
+        <HishtalmutForm form={hishForm} setForm={setHishForm} companies={FUND_COMPANIES} tracks={HISHTALMUT_TRACKS} />
+        <button onClick={saveHishEdit}
+          className="w-full mt-4 bg-teal-600 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-teal-700">
+          שמור שינויים
+        </button>
+      </Modal>
+
       {/* MODALS — Gemel */}
       <Modal open={gemelAddModal} onClose={() => setGemelAddModal(false)} title="הוסף קופת גמל">
         <GemelForm form={gemelForm} setForm={setGemelForm} companies={GEMEL_COMPANIES} tracks={GEMEL_TRACKS} />
@@ -521,7 +1011,7 @@ export default function Savings() {
 
       {/* MODAL — Pension edit */}
       <Modal open={pensionEditModal} onClose={() => setPensionEditModal(false)} title="ערוך הגדרות פנסיה">
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <SectionLabel>פרטי הקרן</SectionLabel>
           {([{ key: 'name', label: 'שם הקרן' }, { key: 'company', label: 'חברה מנהלת' }, { key: 'balance', label: 'יתרה נוכחית (₪)', type: 'number', note: 'הסכום שצבור בקרן כרגע' }] as {key:string;label:string;type?:string;note?:string}[]).map(({ key, label, type = 'text', note }) => (
             <div key={key}>
@@ -587,6 +1077,19 @@ export default function Savings() {
               onChange={(e) => setPensionEditForm({ ...pensionEditForm, retirementAge: e.target.value })}
               className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
           </div>
+          <SectionLabel>קישורים</SectionLabel>
+          <div className="col-span-1 md:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-0.5">קישור לפירוט חיצוני</label>
+              <input type="url" value={pensionEditForm.link} onChange={(e) => setPensionEditForm({ ...pensionEditForm, link: e.target.value })}
+                placeholder="https://..." className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" dir="ltr" />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-0.5">קישור ללוגו (תמונה)</label>
+              <input type="url" value={pensionEditForm.logoUrl} onChange={(e) => setPensionEditForm({ ...pensionEditForm, logoUrl: e.target.value })}
+                placeholder="https://..." className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" dir="ltr" />
+            </div>
+          </div>
         </div>
         <button onClick={savePensionEdit}
           className="w-full mt-5 bg-blue-600 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-blue-700">
@@ -621,6 +1124,78 @@ function SavingsForm({ form, setForm, banks }: { form: any; setForm: (f: any) =>
           placeholder="https://..."
           className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" dir="ltr" />
       </div>
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-1">קישור ללוגו (תמונה)</label>
+        <input type="url" value={form.logoUrl} onChange={(e) => setForm({ ...form, logoUrl: e.target.value })}
+          placeholder="https://..."
+          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" dir="ltr" />
+      </div>
+    </div>
+  );
+}
+
+function HishtalmutForm({ form, setForm, companies, tracks }: { form: any; setForm: (f: any) => void; companies: string[]; tracks: string[] }) {
+  return (
+    <div className="space-y-4">
+      <div className="bg-teal-50 border border-teal-200 rounded-xl px-4 py-3 text-sm text-teal-800">
+        🎓 <strong>קרן השתלמות</strong> — כלי החיסכון המשתלם ביותר לשכירים. ניתן למשיכה לאחר 6 שנים.
+      </div>
+      {([{ key: 'name', label: 'שם הקרן', placeholder: 'לדוגמה: קרן השתלמות הראל 2020' }, { key: 'balance', label: 'יתרה נוכחית (₪)', type: 'number' }, { key: 'managementFee', label: 'דמי ניהול על צבירה (%)', type: 'number', note: 'מקסימום חוקי 1.5%. חפש בדשבורד של הקרן.' }, { key: 'annualReturn', label: 'תשואה שנתית (%)', type: 'number', note: 'תשואה מצטברת תחושב אוטומטית לפי ריבית דריבית' }] as {key:string;label:string;type?:string;note?:string;placeholder?:string}[]).map(({ key, label, type = 'text', note, placeholder }) => (
+        <div key={key}>
+          <label className="block text-sm font-medium text-slate-700 mb-0.5">{label}</label>
+          {note && <p className="text-xs text-slate-400 mb-1">{note}</p>}
+          <input type={type} value={form[key]} placeholder={placeholder} onChange={(e) => setForm({ ...form, [key]: e.target.value })}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+        </div>
+      ))}
+      {[{ key: 'company', label: 'חברה מנהלת', opts: companies }, { key: 'track', label: 'מסלול השקעה', opts: tracks }].map(({ key, label, opts }) => (
+        <div key={key}>
+          <label className="block text-sm font-medium text-slate-700 mb-0.5">{label}</label>
+          <select value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
+            {opts.map((o) => <option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
+      ))}
+      <div className="border-t border-slate-100 pt-4 space-y-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">הפרשות חודשיות (לחישוב)</p>
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-0.5">משכורת ברוטו (₪)</label>
+          <p className="text-xs text-slate-400 mb-1">לחישוב סכום ההפרשה החודשי — לא חובה</p>
+          <input type="number" value={form.salary} onChange={(e) => setForm({ ...form, salary: e.target.value })}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-0.5">הפרשת עובד (%)</label>
+            <p className="text-xs text-slate-400 mb-1">בד״כ 2.5%</p>
+            <input type="number" step="0.1" value={form.employeeContribution} onChange={(e) => setForm({ ...form, employeeContribution: e.target.value })}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-0.5">הפרשת מעביד (%)</label>
+            <p className="text-xs text-slate-400 mb-1">בד״כ 7.5%</p>
+            <input type="number" step="0.1" value={form.employerContribution} onChange={(e) => setForm({ ...form, employerContribution: e.target.value })}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+          </div>
+        </div>
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-0.5">תאריך פתיחת הקרן</label>
+        <p className="text-xs text-slate-400 mb-1">קובע מתי הקרן תהיה זמינה למשיכה (6 שנים מתאריך זה)</p>
+        <input type="date" value={form.openDate} onChange={(e) => setForm({ ...form, openDate: e.target.value })}
+          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-0.5">קישור לפירוט חיצוני</label>
+        <input type="url" value={form.link} onChange={(e) => setForm({ ...form, link: e.target.value })}
+          placeholder="https://..." className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" dir="ltr" />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-0.5">קישור ללוגו (תמונה)</label>
+        <input type="url" value={form.logoUrl} onChange={(e) => setForm({ ...form, logoUrl: e.target.value })}
+          placeholder="https://..." className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" dir="ltr" />
+      </div>
     </div>
   );
 }
@@ -628,13 +1203,33 @@ function SavingsForm({ form, setForm, banks }: { form: any; setForm: (f: any) =>
 function GemelForm({ form, setForm, companies, tracks }: { form: any; setForm: (f: any) => void; companies: string[]; tracks: string[] }) {
   return (
     <div className="space-y-4">
-      {([{ key: 'name', label: 'שם הקרן' }, { key: 'balance', label: 'יתרה נוכחית (₪)', type: 'number' }, { key: 'managementFee', label: 'דמי ניהול (%)', type: 'number' }, { key: 'annualReturn', label: 'תשואה שנתית (%)', type: 'number' }, { key: 'totalReturn', label: 'תשואה מצטברת (%)', type: 'number' }] as {key:string;label:string;type?:string}[]).map(({ key, label, type = 'text' }) => (
-      <div key={key}>
-        <label className="block text-sm font-medium text-slate-700 mb-1">{label}</label>
-        <input type={type} value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })}
+      {([{ key: 'name', label: 'שם הקרן' }, { key: 'balance', label: 'יתרה נוכחית (₪)', type: 'number' }] as {key:string;label:string;type?:string}[]).map(({ key, label, type = 'text' }) => (
+        <div key={key}>
+          <label className="block text-sm font-medium text-slate-700 mb-1">{label}</label>
+          <input type={type} value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+        </div>
+      ))}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-0.5">דמי ניהול מצבירה (%)</label>
+          <p className="text-xs text-slate-400 mb-1">% שנתי מהיתרה הצבורה. מקס: 1.1%</p>
+          <input type="number" step="0.01" value={form.managementFee} onChange={(e) => setForm({ ...form, managementFee: e.target.value })}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-0.5">דמי ניהול מהפקדות (%)</label>
+          <p className="text-xs text-slate-400 mb-1">% מכל הפקדה חדשה. מקס: 4%</p>
+          <input type="number" step="0.01" value={form.depositFee} onChange={(e) => setForm({ ...form, depositFee: e.target.value })}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+        </div>
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-0.5">תשואה (%)</label>
+        <p className="text-xs text-slate-400 mb-1">כפי שמופיעה בפורטל הקרן</p>
+        <input type="number" step="0.1" value={form.annualReturn} onChange={(e) => setForm({ ...form, annualReturn: e.target.value })}
           className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
       </div>
-    ))}
       {[{ key: 'company', label: 'חברה מנהלת', opts: companies }, { key: 'track', label: 'מסלול', opts: tracks }].map(({ key, label, opts }) => (
         <div key={key}>
           <label className="block text-sm font-medium text-slate-700 mb-1">{label}</label>
@@ -644,6 +1239,37 @@ function GemelForm({ form, setForm, companies, tracks }: { form: any; setForm: (
           </select>
         </div>
       ))}
+      <div className="border-t border-slate-100 pt-4 space-y-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">הפרשות חודשיות (לחישוב)</p>
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-0.5">משכורת ברוטו (₪)</label>
+          <p className="text-xs text-slate-400 mb-1">לחישוב סכום ההפרשה החודשי — לא חובה</p>
+          <input type="number" value={form.salary} onChange={(e) => setForm({ ...form, salary: e.target.value })}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-0.5">הפרשת עובד (%)</label>
+            <input type="number" step="0.1" value={form.employeeContribution} onChange={(e) => setForm({ ...form, employeeContribution: e.target.value })}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-0.5">הפרשת מעביד (%)</label>
+            <input type="number" step="0.1" value={form.employerContribution} onChange={(e) => setForm({ ...form, employerContribution: e.target.value })}
+              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+          </div>
+        </div>
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-0.5">קישור לפירוט חיצוני</label>
+        <input type="url" value={form.link || ''} onChange={(e) => setForm({ ...form, link: e.target.value })}
+          placeholder="https://..." className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" dir="ltr" />
+      </div>
+      <div>
+        <label className="block text-sm font-medium text-slate-700 mb-0.5">קישור ללוגו (תמונה)</label>
+        <input type="url" value={form.logoUrl || ''} onChange={(e) => setForm({ ...form, logoUrl: e.target.value })}
+          placeholder="https://..." className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" dir="ltr" />
+      </div>
     </div>
   );
 }

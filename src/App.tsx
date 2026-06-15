@@ -1,9 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider } from './hooks/useAuth';
-import { useAuth } from './hooks/useAuth';
-import { useSettings } from './store/settingsStore';
 import Layout from './components/layout/Layout';
-import LoginScreen from './components/auth/LoginScreen';
 import Dashboard from './pages/Dashboard';
 import Expenses from './pages/Expenses';
 import Stocks from './pages/Stocks';
@@ -16,28 +12,7 @@ import Simulator from './pages/Simulator';
 import Reminders from './pages/Reminders';
 import Settings from './pages/Settings';
 
-/** Inner app — after AuthProvider is mounted, checks Firebase auth state */
 function AppRoutes() {
-  const { user, loading } = useAuth();
-  const { firebaseEnabled } = useSettings();
-
-  // Show login screen only if Firebase is enabled and user is not authenticated
-  if (firebaseEnabled && !loading && !user) {
-    return <LoginScreen />;
-  }
-
-  // Loading spinner while Firebase resolves auth state
-  if (firebaseEnabled && loading) {
-    return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center" dir="rtl">
-        <div className="flex flex-col items-center gap-3 text-slate-300">
-          <div className="w-8 h-8 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-          <span className="text-sm">טוען...</span>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <Routes>
       <Route element={<Layout />}>
@@ -63,9 +38,7 @@ function AppRoutes() {
 export default function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <AppRoutes />
-      </AuthProvider>
+      <AppRoutes />
     </BrowserRouter>
   );
 }

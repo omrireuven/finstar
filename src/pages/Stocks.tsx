@@ -112,7 +112,7 @@ function buildTimeline(
   allHistory: Map<string, HistoricalPoint[]>,
   lots: PortfolioLot[],
   usdIls: number,
-): { date: string; value: number }[] {
+): { date: string; value: number; cost: number }[] {
   if (allHistory.size === 0) return [];
 
   const priceMaps = new Map<string, Map<string, number>>();
@@ -131,15 +131,18 @@ function buildTimeline(
   return allDates
     .map((date) => {
       let value = 0;
+      let cost = 0;
       for (const lot of activeLots) {
         if (lot.buyDate > date) continue;
         const pm = priceMaps.get(lot.ticker);
         if (!pm) continue;
         const price = pm.get(date);
         if (price === undefined) continue;
-        value += lot.quantity * price * (lot.currency === 'USD' ? usdIls : 1);
+        const fx = lot.currency === 'USD' ? usdIls : 1;
+        value += lot.quantity * price * fx;
+        cost += (lot.quantity * lot.buyPrice + lot.commission) * fx;
       }
-      return { date: date.slice(5), value: Math.round(value) };
+      return { date: date.slice(5), value: Math.round(value), cost: Math.round(cost) };
     })
     .filter((d) => d.value > 0);
 }
@@ -192,6 +195,8 @@ export default function Stocks() {
 
   // All-lots flat view toggle
   const [showAllLots, setShowAllLots] = useState(false);
+  const [showDynamicCost, setShowDynamicCost] = useState(false);
+  const [showPortfolioPins, setShowPortfolioPins] = useState(false);
 
   // Locked ticker for "add from expanded view"
   const [lockedTicker, setLockedTicker] = useState<string | null>(null);
@@ -239,6 +244,13 @@ export default function Stocks() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTickers.join(','), portfolioRange, corsProxy]);
 
+  // ── Auto-select first ticker by default ──────────────────────────────────
+  useEffect(() => {
+    if (!selectedTicker && activeTickers.length > 0) {
+      setSelectedTicker(activeTickers[0]);
+    }
+  }, [selectedTicker, activeTickers]);
+
   // ── Fetch selected ticker history ─────────────────────────────────────────
   useEffect(() => {
     if (!selectedTicker) return;
@@ -259,6 +271,30 @@ export default function Stocks() {
     () => buildTimeline(allHistory, lots, usdIls),
     [allHistory, lots, usdIls]
   );
+
+  // ── Pin markers for the portfolio chart ────────────────────────────────────
+  const portfolioPins = useMemo(() => {
+    if (timeline.length === 0) return { buys: [], sells: [] };
+    const chartDates = new Set(timeline.map((d) => d.date));
+
+    const buySet = new Set<string>();
+    const sellSet = new Set<string>();
+
+    for (const lot of lots) {
+      const bd = lot.buyDate.slice(5);
+      if (chartDates.has(bd)) buySet.add(bd);
+      
+      if (lot.sellDate) {
+        const sd = lot.sellDate.slice(5);
+        if (chartDates.has(sd)) sellSet.add(sd);
+      }
+    }
+
+    return {
+      buys: Array.from(buySet).map(date => ({ date })),
+      sells: Array.from(sellSet).map(date => ({ date }))
+    };
+  }, [timeline, lots]);
 
   // ILS-equivalent total cost (used for portfolio chart reference line)
   const totalCost = useMemo(
@@ -467,7 +503,7 @@ export default function Stocks() {
       </div>
 
       {/* ── KPI Cards ── */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
 
         {/* שווי תיק נוכחי */}
         <Card>
@@ -557,7 +593,15 @@ export default function Stocks() {
               {isAboveCost ? '▲ מעל עלות הרכישה' : '▼ מתחת לעלות הרכישה'}
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center justify-end gap-3 mt-2 sm:mt-0">
+            <button onClick={() => setShowDynamicCost(!showDynamicCost)}
+              className={`text-xs px-2 py-1 rounded-md transition-colors ${showDynamicCost ? 'bg-blue-100 text-blue-700 font-medium' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+              {showDynamicCost ? 'מציג עלות דינאמית' : 'הצג עלות דינאמית'}
+            </button>
+            <button onClick={() => setShowPortfolioPins(!showPortfolioPins)}
+              className={`text-xs px-2 py-1 rounded-md transition-colors ${showPortfolioPins ? 'bg-purple-100 text-purple-700 font-medium' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}>
+              {showPortfolioPins ? 'מציג פעולות' : 'הצג פעולות'}
+            </button>
             {loadingPortfolio && <Loader2 size={14} className="animate-spin text-slate-400" />}
             <RangeTabs value={portfolioRange} onChange={setPortfolioRange} />
           </div>
@@ -578,10 +622,22 @@ export default function Stocks() {
               <YAxis tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false}
                 width={65} tickFormatter={(v) => `₪${(v / 1000).toFixed(0)}k`} domain={['auto', 'auto']} />
               <Tooltip
-                formatter={(v: unknown) => [fmtCurrency(v as number), 'שווי תיק']}
+                formatter={(v: unknown, name: string) => [fmtCurrency(v as number), name === 'value' ? 'שווי תיק' : 'עלות רכישה']}
                 contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 13 }} />
-              <ReferenceLine y={totalCost} stroke="#94a3b8" strokeDasharray="6 3"
-                label={{ value: `עלות ${fmtCurrency(totalCost)}`, position: 'insideTopRight', fontSize: 11, fill: '#94a3b8' }} />
+              {showDynamicCost ? (
+                <Area type="stepAfter" dataKey="cost" stroke="#94a3b8" fill="none" strokeWidth={2} strokeDasharray="4 4" />
+              ) : (
+                <ReferenceLine y={totalCost} stroke="#94a3b8" strokeDasharray="6 3"
+                  label={{ value: `עלות ${fmtCurrency(totalCost)}`, position: 'insideTopRight', fontSize: 11, fill: '#94a3b8' }} />
+              )}
+              {showPortfolioPins && portfolioPins.buys.map(({ date }) => (
+                <ReferenceLine key={`pbuy-${date}`} x={date} stroke="transparent"
+                  label={<PinLabel pinType="buy" /> as unknown as ReactElement<SVGElement>} />
+              ))}
+              {showPortfolioPins && portfolioPins.sells.map(({ date }) => (
+                <ReferenceLine key={`psell-${date}`} x={date} stroke="transparent"
+                  label={<PinLabel pinType="sell" /> as unknown as ReactElement<SVGElement>} />
+              ))}
               <Area type="monotone" dataKey="value"
                 stroke={isAboveCost ? '#10b981' : '#ef4444'} strokeWidth={2}
                 fill="url(#portfolioGrad)" dot={false} activeDot={{ r: 4 }} />
@@ -599,343 +655,352 @@ export default function Stocks() {
         </p>
       </Card>
 
-      {/* ── Stock list with sparklines ── */}
-      <Card className="p-0 overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
-          <span className="font-semibold text-slate-900">
-            פורטפוליו
-            <span className="text-xs font-normal text-slate-400 mr-2">לחץ לגרף מורחב</span>
-          </span>
-          <button onClick={() => setShowAllLots((v) => !v)}
-            className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${showAllLots ? 'bg-blue-50 border-blue-200 text-blue-600' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}>
-            {showAllLots ? '▲ הסתר כל הלוטים' : '▼ כל הלוטים'}
-          </button>
-        </div>
-        <div className="divide-y divide-slate-50">
-          {rows.map((r) => {
-            const spark = sparklines[r.ticker] ?? [];
-            const positive = r.pnl >= 0;
-            const isSelected = r.ticker === selectedTicker;
-            return (
-              <div key={r.ticker} onClick={() => handleRowClick(r.ticker)}
-                className={`flex items-center gap-4 px-5 py-3.5 cursor-pointer transition-colors ${
-                  isSelected ? 'bg-blue-50 border-r-2 border-blue-500' : 'hover:bg-slate-50'
-                }`}>
-                <div className="w-28 shrink-0">
-                  <div className="font-bold text-slate-900 text-sm">{r.ticker}</div>
-                  <div className="text-xs text-slate-400 truncate">{r.name}</div>
-                </div>
-                <div className="flex-1 flex justify-center">
-                  <Sparkline points={spark} positive={positive} />
-                </div>
-                <div className="w-24 text-right shrink-0">
-                  <div className="text-sm font-medium text-slate-900">
-                    {r.currency === 'USD' ? '$' : '₪'}{fmt(r.price, 2)}
-                  </div>
-                  <div className={`text-xs font-medium ${positive ? 'text-green-600' : 'text-red-500'}`}>
-                    {r.pnlPct >= 0 ? '+' : ''}{fmt(r.pnlPct, 2)}%
-                  </div>
-                </div>
-                <div className="w-32 text-right shrink-0">
-                  {/* Value in native currency — primary display */}
-                  <div className="text-sm font-semibold text-slate-900">
-                    {r.currency === 'USD'
-                      ? `$${fmt(r.currentValueNative, 0)}`
-                      : fmtCurrency(r.currentValueNative)}
-                  </div>
-                  {/* P&L in native currency */}
-                  <div className={`text-xs font-medium ${positive ? 'text-green-600' : 'text-red-500'}`}>
-                    {positive ? '+' : ''}{r.currency === 'USD'
-                      ? `$${fmt(r.pnlNative, 0)}`
-                      : fmtCurrency(r.pnlNative)}
-                  </div>
-                  {/* ≈ ILS estimate (only for USD holdings) */}
-                  {r.currency === 'USD' && (
-                    <div className="text-[10px] text-slate-400 mt-0.5">≈ {fmtCurrency(r.currentValueILS)}</div>
-                  )}
-                </div>
-                <div className="w-8 flex justify-end shrink-0">
-                  {positive ? <TrendingUp size={16} className="text-green-500" />
-                    : <TrendingDown size={16} className="text-red-400" />}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </Card>
+      {/* ── Split panel: stock list (right) + expanded chart (left) ── */}
+      <div className="flex flex-col-reverse lg:flex-row gap-5 items-start">
 
-      {/* ── All Lots Flat View ── */}
-      {showAllLots && (
-        <Card className="p-0 overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-100 font-semibold text-slate-900">
-            כל הלוטים ({lots.length})
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-slate-50 border-b border-slate-100">
-                  {['טיקר', 'תאריך קנייה', 'כמות', 'מחיר קנייה', 'מחיר נוכחי', 'שווי / מכירה', 'רווח/הפסד', 'סטטוס', ''].map((h) => (
-                    <th key={h} className="text-right px-3 py-2.5 text-slate-500 font-medium text-xs">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {[...lots].sort((a, b) => b.buyDate.localeCompare(a.buyDate)).map((lot) => {
-                  const isSold = !!lot.sellDate;
-                  const rate = lot.currency === 'USD' ? usdIls : 1;
-                  const currentPrice = prices[lot.ticker] ?? 0;
-                  const currentVal = lot.quantity * currentPrice * rate;
-                  const cost = (lot.quantity * lot.buyPrice + lot.commission) * rate;
-                  const proceeds = lot.quantity * (lot.sellPrice ?? 0) * rate;
-                  const pnl = isSold ? proceeds - cost : currentVal - cost;
-                  return (
-                    <tr key={lot.id} className={`border-b border-slate-50 hover:bg-slate-50 ${isSold ? 'opacity-60' : ''}`}>
-                      <td className="px-3 py-2.5 font-bold text-slate-900">{lot.ticker}</td>
-                      <td className="px-3 py-2.5 text-slate-500">{lot.buyDate}</td>
-                      <td className="px-3 py-2.5">{lot.quantity}</td>
-                      <td className="px-3 py-2.5">{lot.currency === 'USD' ? '$' : '₪'}{fmt(lot.buyPrice, 2)}</td>
-                      <td className="px-3 py-2.5">{lot.currency === 'USD' ? '$' : '₪'}{fmt(currentPrice, 2)}</td>
-                      <td className="px-3 py-2.5">
-                        {isSold
-                          ? <span className="text-amber-600">{lot.currency === 'USD' ? '$' : '₪'}{fmt(lot.sellPrice ?? 0, 2)} ↳ {lot.sellDate}</span>
-                          : fmtCurrency(currentVal)}
-                      </td>
-                      <td className={`px-3 py-2.5 font-medium ${pnl >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-                        {pnl >= 0 ? '+' : ''}{fmtCurrency(pnl)}
-                        {isSold && <span className="text-xs block text-slate-400">ממומש</span>}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <span className={`text-xs px-2 py-0.5 rounded-full ${isSold ? 'bg-slate-100 text-slate-500' : 'bg-green-100 text-green-700'}`}>
-                          {isSold ? 'נמכר' : 'פתוח'}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <div className="flex gap-1">
-                          <button onClick={() => openEditLot(lot)}
-                            className="p-1 text-slate-300 hover:text-blue-500" title="ערוך">
-                            <Pencil size={13} />
-                          </button>
-                          <button onClick={() => deleteLot(lot.id)}
-                            className="p-1 text-slate-300 hover:text-red-400" title="מחק">✕</button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
+        {/* Right column: full width when no chart open, fixed width when split */}
+        <div className={`flex flex-col gap-5 transition-all w-full ${selectedTicker ? 'lg:w-[490px] shrink-0' : 'flex-1'}`}>
 
-      {/* ── Detailed ticker chart + lots ── */}
-      {selectedTicker && (
-        <Card>
-          {/* Chart header */}
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <h2 className="font-bold text-slate-900 text-lg">{selectedTicker}</h2>
-              <p className="text-sm text-slate-500">{rows.find((r) => r.ticker === selectedTicker)?.name}</p>
-            </div>
-            <div className="flex items-center gap-3">
-              {loadingTicker && <Loader2 size={14} className="animate-spin text-slate-400" />}
-              <RangeTabs value={selectedRange} onChange={setSelectedRange} />
-              <button onClick={() => { setSelectedTicker(null); setTickerHistory([]); }}
-                className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 text-lg">
-                ✕
+          {/* Stock list with sparklines */}
+          <Card className="p-0 overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100 flex items-center justify-between">
+              <span className="font-semibold text-slate-900">
+                פורטפוליו
+                <span className="text-xs font-normal text-slate-400 mr-2">לחץ לגרף מורחב</span>
+              </span>
+              <button onClick={() => setShowAllLots((v) => !v)}
+                className={`text-xs px-3 py-1.5 rounded-lg border transition-colors ${showAllLots ? 'bg-blue-50 border-blue-200 text-blue-600' : 'border-slate-200 text-slate-500 hover:bg-slate-50'}`}>
+                {showAllLots ? '▲ הסתר כל הלוטים' : '▼ כל הלוטים'}
               </button>
             </div>
-          </div>
-
-          {/* Legend for pins */}
-          <div className="flex items-center gap-5 mb-3 text-xs text-slate-500">
-            <div className="flex items-center gap-1.5">
-              <span className="w-4 h-4 rounded-full bg-blue-500 flex items-center justify-center text-white font-bold text-[8px]">ק</span>
-              <span>תאריך קנייה</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="w-4 h-4 rounded-full bg-amber-500 flex items-center justify-center text-white font-bold text-[8px]">מ</span>
-              <span>תאריך מכירה</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <span className="inline-block w-8 border-t border-dashed border-amber-400" />
-              <span>מחיר קנייה ממוצע</span>
-            </div>
-          </div>
-
-          {/* Chart */}
-          {loadingTicker ? (
-            <div className="flex items-center justify-center h-52 text-slate-400 gap-2">
-              <Loader2 size={20} className="animate-spin" />
-              <span className="text-sm">טוען מ-Yahoo Finance...</span>
-            </div>
-          ) : detailData.length > 1 ? (
-            (() => {
-              const first = detailData[0].מחיר;
-              const last = detailData[detailData.length - 1].מחיר;
-              const up = last >= first;
-              const avgBuy = rows.find((r) => r.ticker === selectedTicker)?.avgCost ?? 0;
-              return (
-                <>
-                  <div className="flex gap-4 mb-3 text-sm">
-                    <span className="text-slate-500">
-                      פתיחת תקופה: <b className="text-slate-800">${first.toFixed(2)}</b>
-                    </span>
-                    <span className="text-slate-500">
-                      נוכחי: <b className="text-slate-800">${last.toFixed(2)}</b>
-                    </span>
-                    <span className={up ? 'text-green-600 font-medium' : 'text-red-500 font-medium'}>
-                      {up ? '▲' : '▼'} {Math.abs(((last - first) / first) * 100).toFixed(2)}%
-                    </span>
-                  </div>
-                  <ResponsiveContainer width="100%" height={260}>
-                    <AreaChart data={detailData} margin={{ top: 20, right: 10, left: 0, bottom: 20 }}>
-                      <defs>
-                        <linearGradient id="tickerGrad" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="5%" stopColor={up ? '#3b82f6' : '#ef4444'} stopOpacity={0.15} />
-                          <stop offset="95%" stopColor={up ? '#3b82f6' : '#ef4444'} stopOpacity={0} />
-                        </linearGradient>
-                      </defs>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-                      <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#94a3b8' }}
-                        axisLine={false} tickLine={false} interval="preserveStartEnd" />
-                      <YAxis tick={{ fontSize: 11, fill: '#64748b' }} domain={['auto', 'auto']}
-                        width={62} axisLine={false} tickLine={false}
-                        tickFormatter={(v) => `$${v.toFixed(0)}`} />
-                      <Tooltip
-                        formatter={(v: unknown) => [`$${(v as number).toFixed(2)}`, 'מחיר סגירה']}
-                        contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 13 }} />
-
-                      {/* Average buy price horizontal line */}
-                      {avgBuy > 0 && (
-                        <ReferenceLine y={avgBuy} stroke="#f59e0b" strokeDasharray="5 3"
-                          label={{ value: `ממוצע $${avgBuy.toFixed(2)}`, position: 'insideTopLeft', fontSize: 10, fill: '#d97706' }} />
+            <div className="divide-y divide-slate-50">
+              {rows.map((r) => {
+                const spark = sparklines[r.ticker] ?? [];
+                const positive = r.pnl >= 0;
+                const isSelected = r.ticker === selectedTicker;
+                return (
+                  <div key={r.ticker} onClick={() => handleRowClick(r.ticker)}
+                    className={`flex items-center gap-4 px-5 py-3.5 cursor-pointer transition-colors ${
+                      isSelected ? 'bg-blue-50 border-r-2 border-blue-500' : 'hover:bg-slate-50'
+                    }`}>
+                    <div className="w-28 shrink-0">
+                      <div className="font-bold text-slate-900 text-sm">{r.ticker}</div>
+                      <div className="text-xs text-slate-400 truncate">{r.name}</div>
+                    </div>
+                    {/* Hide sparklines when in split mode to save space */}
+                    {!selectedTicker && (
+                      <div className="flex-1 flex justify-center">
+                        <Sparkline points={spark} positive={positive} />
+                      </div>
+                    )}
+                    <div className={`${selectedTicker ? 'flex-1' : 'w-24'} text-right shrink-0`}>
+                      <div className="text-sm font-medium text-slate-900">
+                        {r.currency === 'USD' ? '$' : '₪'}{fmt(r.price, 2)}
+                      </div>
+                      <div className={`text-xs font-medium ${positive ? 'text-green-600' : 'text-red-500'}`}>
+                        {r.pnlPct >= 0 ? '+' : ''}{fmt(r.pnlPct, 2)}%
+                      </div>
+                    </div>
+                    <div className="w-32 text-right shrink-0">
+                      {/* Value in native currency — primary display */}
+                      <div className="text-sm font-semibold text-slate-900">
+                        {r.currency === 'USD'
+                          ? `$${fmt(r.currentValueNative, 0)}`
+                          : fmtCurrency(r.currentValueNative)}
+                      </div>
+                      {/* P&L in native currency */}
+                      <div className={`text-xs font-medium ${positive ? 'text-green-600' : 'text-red-500'}`}>
+                        {positive ? '+' : ''}{r.currency === 'USD'
+                          ? `$${fmt(r.pnlNative, 0)}`
+                          : fmtCurrency(r.pnlNative)}
+                      </div>
+                      {/* ≈ ILS estimate (only for USD holdings) */}
+                      {r.currency === 'USD' && (
+                        <div className="text-[10px] text-slate-400 mt-0.5">≈ {fmtCurrency(r.currentValueILS)}</div>
                       )}
-
-                      {/* Buy pin markers */}
-                      {chartPins.buys.map(({ date, price }) => (
-                        <ReferenceLine key={`buy-${date}`} x={date} stroke="transparent"
-                          label={<PinLabel pinType="buy" price={price} /> as unknown as ReactElement<SVGElement>} />
-                      ))}
-
-                      {/* Sell pin markers */}
-                      {chartPins.sells.map(({ date, price }) => (
-                        <ReferenceLine key={`sell-${date}`} x={date} stroke="transparent"
-                          label={<PinLabel pinType="sell" price={price} /> as unknown as ReactElement<SVGElement>} />
-                      ))}
-
-                      <Area type="monotone" dataKey="מחיר"
-                        stroke={up ? '#3b82f6' : '#ef4444'} strokeWidth={2}
-                        fill="url(#tickerGrad)" dot={false} activeDot={{ r: 4 }} />
-                    </AreaChart>
-                  </ResponsiveContainer>
-                </>
-              );
-            })()
-          ) : !loadingTicker ? (
-            <div className="flex flex-col items-center justify-center h-52 text-slate-400 gap-2">
-              <span className="text-sm">לא ניתן לטעון נתונים</span>
-              <span className="text-xs">בדוק הגדרות CORS Proxy בעמוד ההגדרות</span>
+                    </div>
+                    <div className="w-8 flex justify-end shrink-0">
+                      {positive ? <TrendingUp size={16} className="text-green-500" />
+                        : <TrendingDown size={16} className="text-red-400" />}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-          ) : null}
+          </Card>
 
-          {/* ── Lots table (open + closed) ── */}
-          <div className="mt-5 pt-4 border-t border-slate-100">
-            <div className="flex items-center justify-between mb-3">
-              <div className="font-medium text-slate-700 text-sm">
-                לוטים — {selectedTicker}
-                <span className="text-xs text-slate-400 mr-2">
-                  ({allTickerLots.filter((l) => !l.sellDate).length} פתוחים,{' '}
-                  {allTickerLots.filter((l) => l.sellDate).length} סגורים)
-                </span>
+          {/* All Lots flat view (when toggled) */}
+          {showAllLots && (
+            <Card className="p-0 overflow-hidden">
+              <div className="px-5 py-4 border-b border-slate-100 font-semibold text-slate-900">
+                כל הלוטים ({lots.length})
               </div>
-              <button onClick={() => openAddForTicker(selectedTicker!)}
-                className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
-                <Plus size={12} /> הוסף קנייה ל-{selectedTicker}
-              </button>
-            </div>
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-slate-500 border-b border-slate-100">
-                  {['תאריך קנייה', 'כמות', 'מחיר קנייה', 'שווי / מכירה', 'רווח/הפסד', ''].map((h) => (
-                    <th key={h} className="text-right py-2 px-3 font-medium">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {allTickerLots.map((lot) => {
-                  const isSold = !!lot.sellDate;
-                  const currentPrice = prices[lot.ticker] ?? 0;
-                  const rate = lot.currency === 'USD' ? usdIls : 1;
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-100">
+                      {['טיקר', 'תאריך קנייה', 'כמות', 'מחיר קנייה', 'מחיר נוכחי', 'שווי / מכירה', 'רווח/הפסד', 'סטטוס', ''].map((h) => (
+                        <th key={h} className="text-right px-3 py-2.5 text-slate-500 font-medium text-xs">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...lots].sort((a, b) => b.buyDate.localeCompare(a.buyDate)).map((lot) => {
+                      const isSold = !!lot.sellDate;
+                      const rate = lot.currency === 'USD' ? usdIls : 1;
+                      const currentPrice = prices[lot.ticker] ?? 0;
+                      const currentVal = lot.quantity * currentPrice * rate;
+                      const cost = (lot.quantity * lot.buyPrice + lot.commission) * rate;
+                      const proceeds = lot.quantity * (lot.sellPrice ?? 0) * rate;
+                      const pnl = isSold ? proceeds - cost : currentVal - cost;
+                      return (
+                        <tr key={lot.id} className={`border-b border-slate-50 hover:bg-slate-50 ${isSold ? 'opacity-60' : ''}`}>
+                          <td className="px-3 py-2.5 font-bold text-slate-900">{lot.ticker}</td>
+                          <td className="px-3 py-2.5 text-slate-500">{lot.buyDate}</td>
+                          <td className="px-3 py-2.5">{lot.quantity}</td>
+                          <td className="px-3 py-2.5">{lot.currency === 'USD' ? '$' : '₪'}{fmt(lot.buyPrice, 2)}</td>
+                          <td className="px-3 py-2.5">{lot.currency === 'USD' ? '$' : '₪'}{fmt(currentPrice, 2)}</td>
+                          <td className="px-3 py-2.5">
+                            {isSold
+                              ? <span className="text-amber-600">{lot.currency === 'USD' ? '$' : '₪'}{fmt(lot.sellPrice ?? 0, 2)} ↳ {lot.sellDate}</span>
+                              : fmtCurrency(currentVal)}
+                          </td>
+                          <td className={`px-3 py-2.5 font-medium ${pnl >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                            {pnl >= 0 ? '+' : ''}{fmtCurrency(pnl)}
+                            {isSold && <span className="text-xs block text-slate-400">ממומש</span>}
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${isSold ? 'bg-slate-100 text-slate-500' : 'bg-green-100 text-green-700'}`}>
+                              {isSold ? 'נמכר' : 'פתוח'}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <div className="flex gap-1">
+                              <button onClick={() => openEditLot(lot)}
+                                className="p-1 text-slate-300 hover:text-blue-500" title="ערוך">
+                                <Pencil size={13} />
+                              </button>
+                              <button onClick={() => deleteLot(lot.id)}
+                                className="p-1 text-slate-300 hover:text-red-400" title="מחק">✕</button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          )}
 
-                  if (isSold) {
-                    // Realized P&L
-                    const proceeds = lot.quantity * (lot.sellPrice ?? 0) * rate;
+        </div>{/* end right column */}
+
+        {/* Left column: expanded ticker chart — appears only when a ticker is selected */}
+        {selectedTicker && (
+          <Card className="flex-1 min-w-0">
+            {/* Chart header */}
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="font-bold text-slate-900 text-lg">{selectedTicker}</h2>
+                <p className="text-sm text-slate-500">{rows.find((r) => r.ticker === selectedTicker)?.name}</p>
+              </div>
+              <div className="flex items-center gap-3">
+                {loadingTicker && <Loader2 size={14} className="animate-spin text-slate-400" />}
+                <RangeTabs value={selectedRange} onChange={setSelectedRange} />
+              </div>
+            </div>
+
+            {/* Legend for pins */}
+            <div className="flex items-center gap-5 mb-3 text-xs text-slate-500">
+              <div className="flex items-center gap-1.5">
+                <span className="w-4 h-4 rounded-full bg-blue-500 flex items-center justify-center text-white font-bold text-[8px]">ק</span>
+                <span>תאריך קנייה</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-4 h-4 rounded-full bg-amber-500 flex items-center justify-center text-white font-bold text-[8px]">מ</span>
+                <span>תאריך מכירה</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="inline-block w-8 border-t border-dashed border-amber-400" />
+                <span>מחיר קנייה ממוצע</span>
+              </div>
+            </div>
+
+            {/* Chart */}
+            {loadingTicker ? (
+              <div className="flex items-center justify-center h-52 text-slate-400 gap-2">
+                <Loader2 size={20} className="animate-spin" />
+                <span className="text-sm">טוען מ-Yahoo Finance...</span>
+              </div>
+            ) : detailData.length > 1 ? (
+              (() => {
+                const first = detailData[0].מחיר;
+                const last = detailData[detailData.length - 1].מחיר;
+                const up = last >= first;
+                const avgBuy = rows.find((r) => r.ticker === selectedTicker)?.avgCost ?? 0;
+                return (
+                  <>
+                    <div className="flex gap-4 mb-3 text-sm">
+                      <span className="text-slate-500">
+                        פתיחת תקופה: <b className="text-slate-800">${first.toFixed(2)}</b>
+                      </span>
+                      <span className="text-slate-500">
+                        נוכחי: <b className="text-slate-800">${last.toFixed(2)}</b>
+                      </span>
+                      <span className={up ? 'text-green-600 font-medium' : 'text-red-500 font-medium'}>
+                        {up ? '▲' : '▼'} {Math.abs(((last - first) / first) * 100).toFixed(2)}%
+                      </span>
+                    </div>
+                    <ResponsiveContainer width="100%" height={260}>
+                      <AreaChart data={detailData} margin={{ top: 20, right: 10, left: 0, bottom: 20 }}>
+                        <defs>
+                          <linearGradient id="tickerGrad" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="5%" stopColor={up ? '#3b82f6' : '#ef4444'} stopOpacity={0.15} />
+                            <stop offset="95%" stopColor={up ? '#3b82f6' : '#ef4444'} stopOpacity={0} />
+                          </linearGradient>
+                        </defs>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
+                        <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#94a3b8' }}
+                          axisLine={false} tickLine={false} interval="preserveStartEnd" />
+                        <YAxis tick={{ fontSize: 11, fill: '#64748b' }} domain={['auto', 'auto']}
+                          width={62} axisLine={false} tickLine={false}
+                          tickFormatter={(v) => `$${v.toFixed(0)}`} />
+                        <Tooltip
+                          formatter={(v: unknown) => [`$${(v as number).toFixed(2)}`, 'מחיר סגירה']}
+                          contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 13 }} />
+
+                        {/* Average buy price horizontal line */}
+                        {avgBuy > 0 && (
+                          <ReferenceLine y={avgBuy} stroke="#f59e0b" strokeDasharray="5 3"
+                            label={{ value: `ממוצע $${avgBuy.toFixed(2)}`, position: 'insideTopLeft', fontSize: 10, fill: '#d97706' }} />
+                        )}
+
+                        {/* Buy pin markers */}
+                        {chartPins.buys.map(({ date, price }) => (
+                          <ReferenceLine key={`buy-${date}`} x={date} stroke="transparent"
+                            label={<PinLabel pinType="buy" price={price} /> as unknown as ReactElement<SVGElement>} />
+                        ))}
+
+                        {/* Sell pin markers */}
+                        {chartPins.sells.map(({ date, price }) => (
+                          <ReferenceLine key={`sell-${date}`} x={date} stroke="transparent"
+                            label={<PinLabel pinType="sell" price={price} /> as unknown as ReactElement<SVGElement>} />
+                        ))}
+
+                        <Area type="monotone" dataKey="מחיר"
+                          stroke={up ? '#3b82f6' : '#ef4444'} strokeWidth={2}
+                          fill="url(#tickerGrad)" dot={false} activeDot={{ r: 4 }} />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  </>
+                );
+              })()
+            ) : !loadingTicker ? (
+              <div className="flex flex-col items-center justify-center h-52 text-slate-400 gap-2">
+                <span className="text-sm">לא ניתן לטעון נתונים</span>
+                <span className="text-xs">בדוק הגדרות CORS Proxy בעמוד ההגדרות</span>
+              </div>
+            ) : null}
+
+            {/* ── Lots table (open + closed) ── */}
+            <div className="mt-5 pt-4 border-t border-slate-100">
+              <div className="flex items-center justify-between mb-3">
+                <div className="font-medium text-slate-700 text-sm">
+                  לוטים — {selectedTicker}
+                  <span className="text-xs text-slate-400 mr-2">
+                    ({allTickerLots.filter((l) => !l.sellDate).length} פתוחים,{' '}
+                    {allTickerLots.filter((l) => l.sellDate).length} סגורים)
+                  </span>
+                </div>
+                <button onClick={() => openAddForTicker(selectedTicker!)}
+                  className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+                  <Plus size={12} /> הוסף קנייה ל-{selectedTicker}
+                </button>
+              </div>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-slate-500 border-b border-slate-100">
+                    {['תאריך קנייה', 'כמות', 'מחיר קנייה', 'שווי / מכירה', 'רווח/הפסד', ''].map((h) => (
+                      <th key={h} className="text-right py-2 px-3 font-medium">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {allTickerLots.map((lot) => {
+                    const isSold = !!lot.sellDate;
+                    const currentPrice = prices[lot.ticker] ?? 0;
+                    const rate = lot.currency === 'USD' ? usdIls : 1;
+
+                    if (isSold) {
+                      // Realized P&L
+                      const proceeds = lot.quantity * (lot.sellPrice ?? 0) * rate;
+                      const cost = (lot.quantity * lot.buyPrice + lot.commission) * rate;
+                      const realizedPnl = proceeds - cost;
+                      return (
+                        <tr key={lot.id} className="border-b border-slate-50 bg-slate-50/50 opacity-75">
+                          <td className="py-2.5 px-3 text-slate-400">
+                            <div>{lot.buyDate}</div>
+                            <div className="text-xs text-amber-500">↳ נמכר {lot.sellDate}</div>
+                          </td>
+                          <td className="py-2.5 px-3 text-slate-400">{lot.quantity}</td>
+                          <td className="py-2.5 px-3 text-slate-400">
+                            {lot.currency === 'USD' ? '$' : '₪'}{fmt(lot.buyPrice, 2)}
+                          </td>
+                          <td className="py-2.5 px-3 text-slate-500">
+                            <div className="text-xs text-slate-400">מכירה</div>
+                            {lot.currency === 'USD' ? '$' : '₪'}{fmt(lot.sellPrice ?? 0, 2)}
+                          </td>
+                          <td className={`py-2.5 px-3 font-medium text-sm ${realizedPnl >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                            {realizedPnl >= 0 ? '+' : ''}{fmtCurrency(realizedPnl)}
+                            <div className="text-xs opacity-70">ממומש</div>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <div className="flex gap-1.5">
+                              <button onClick={() => openEditLot(lot)}
+                                className="p-1 text-slate-300 hover:text-blue-500"><Pencil size={13} /></button>
+                              <button onClick={() => deleteLot(lot.id)}
+                                className="text-xs text-slate-300 hover:text-red-400 transition-colors">✕</button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    }
+
+                    // Open lot
+                    const currentVal = lot.quantity * currentPrice * rate;
                     const cost = (lot.quantity * lot.buyPrice + lot.commission) * rate;
-                    const realizedPnl = proceeds - cost;
+                    const pnl = currentVal - cost;
                     return (
-                      <tr key={lot.id} className="border-b border-slate-50 bg-slate-50/50 opacity-75">
-                        <td className="py-2.5 px-3 text-slate-400">
-                          <div>{lot.buyDate}</div>
-                          <div className="text-xs text-amber-500">↳ נמכר {lot.sellDate}</div>
-                        </td>
-                        <td className="py-2.5 px-3 text-slate-400">{lot.quantity}</td>
-                        <td className="py-2.5 px-3 text-slate-400">
+                      <tr key={lot.id} className="border-b border-slate-50 hover:bg-slate-50">
+                        <td className="py-2.5 px-3 text-slate-600">{lot.buyDate}</td>
+                        <td className="py-2.5 px-3">{lot.quantity}</td>
+                        <td className="py-2.5 px-3">
                           {lot.currency === 'USD' ? '$' : '₪'}{fmt(lot.buyPrice, 2)}
                         </td>
-                        <td className="py-2.5 px-3 text-slate-500">
-                          <div className="text-xs text-slate-400">מכירה</div>
-                          {lot.currency === 'USD' ? '$' : '₪'}{fmt(lot.sellPrice ?? 0, 2)}
-                        </td>
-                        <td className={`py-2.5 px-3 font-medium text-sm ${realizedPnl >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-                          {realizedPnl >= 0 ? '+' : ''}{fmtCurrency(realizedPnl)}
-                          <div className="text-xs opacity-70">ממומש</div>
+                        <td className="py-2.5 px-3 font-medium">{fmtCurrency(currentVal)}</td>
+                        <td className={`py-2.5 px-3 font-medium ${pnl >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+                          {pnl >= 0 ? '+' : ''}{fmtCurrency(pnl)}
                         </td>
                         <td className="py-2.5 px-3">
-                          <div className="flex gap-1.5">
+                          <div className="flex items-center gap-1.5">
                             <button onClick={() => openEditLot(lot)}
                               className="p-1 text-slate-300 hover:text-blue-500"><Pencil size={13} /></button>
-                            <button onClick={() => deleteLot(lot.id)}
-                              className="text-xs text-slate-300 hover:text-red-400 transition-colors">✕</button>
+                            <button onClick={() => openSellModal(lot)}
+                              className="flex items-center gap-1 px-2 py-1 bg-amber-50 border border-amber-200 text-amber-700 rounded-lg text-xs font-medium hover:bg-amber-100">
+                              <BadgeDollarSign size={12} /> מכור
+                            </button>
                           </div>
                         </td>
                       </tr>
                     );
-                  }
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        )}{/* end left column */}
 
-                  // Open lot
-                  const currentVal = lot.quantity * currentPrice * rate;
-                  const cost = (lot.quantity * lot.buyPrice + lot.commission) * rate;
-                  const pnl = currentVal - cost;
-                  return (
-                    <tr key={lot.id} className="border-b border-slate-50 hover:bg-slate-50">
-                      <td className="py-2.5 px-3 text-slate-600">{lot.buyDate}</td>
-                      <td className="py-2.5 px-3">{lot.quantity}</td>
-                      <td className="py-2.5 px-3">
-                        {lot.currency === 'USD' ? '$' : '₪'}{fmt(lot.buyPrice, 2)}
-                      </td>
-                      <td className="py-2.5 px-3 font-medium">{fmtCurrency(currentVal)}</td>
-                      <td className={`py-2.5 px-3 font-medium ${pnl >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-                        {pnl >= 0 ? '+' : ''}{fmtCurrency(pnl)}
-                      </td>
-                      <td className="py-2.5 px-3">
-                        <div className="flex items-center gap-1.5">
-                          <button onClick={() => openEditLot(lot)}
-                            className="p-1 text-slate-300 hover:text-blue-500"><Pencil size={13} /></button>
-                          <button onClick={() => openSellModal(lot)}
-                            className="flex items-center gap-1 px-2 py-1 bg-amber-50 border border-amber-200 text-amber-700 rounded-lg text-xs font-medium hover:bg-amber-100">
-                            <BadgeDollarSign size={12} /> מכור
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-      )}
+      </div>{/* end split panel */}
 
       {/* ── Edit Lot Modal ── */}
       <Modal open={!!editLot} onClose={() => setEditLot(null)} title={`ערוך לוט — ${editLot?.ticker ?? ''}`}>

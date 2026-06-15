@@ -1,10 +1,45 @@
 import { create } from 'zustand';
-import { persist } from 'zustand/middleware';
+import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware';
+
+const serverStorage: StateStorage = {
+  getItem: async (name: string): Promise<string | null> => {
+    try {
+      const res = await fetch('/api/db');
+      if (res.ok) {
+        const data = await res.json();
+        if (!data || Object.keys(data).length === 0 || data.state === null) {
+          return null;
+        }
+        return JSON.stringify(data);
+      }
+    } catch (e) {
+      console.warn('Failed to fetch from server db, falling back to local storage', e);
+      return localStorage.getItem(name);
+    }
+    return null;
+  },
+  setItem: async (name: string, value: string): Promise<void> => {
+    try {
+      await fetch('/api/db', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: value,
+      });
+      localStorage.setItem(name, value);
+    } catch (e) {
+      console.warn('Failed to save to server db, saving locally', e);
+      localStorage.setItem(name, value);
+    }
+  },
+  removeItem: async (name: string): Promise<void> => {
+    localStorage.removeItem(name);
+  },
+};
 import { useMemo } from 'react';
 import type {
   Transaction, RecurringCharge, RecurringOccurrenceOverride,
   PortfolioLot, SavingsAccount,
-  GemelFund, PensionFund, IncomeEntry, Goal, JournalEntry, Category, CategoryDef,
+  GemelFund, HishtalmutFund, PensionFund, IncomeEntry, Goal, JournalEntry, Category, CategoryDef,
 } from '../types';
 import { ALL_CATEGORIES, CATEGORY_COLORS } from '../types';
 import {
@@ -29,6 +64,7 @@ interface FinstarState {
   usdIls: number;
   savings: SavingsAccount[];
   gemel: GemelFund[];
+  hishtalmut: HishtalmutFund[];
   pension: PensionFund[];
   income: IncomeEntry[];
   goals: Goal[];
@@ -52,6 +88,7 @@ interface FinstarState {
   updateLot: (id: string, patch: Partial<PortfolioLot>) => void;
   deleteLot: (id: string) => void;
   updatePrices: (prices: Record<string, number>) => void;
+  setUsdIls: (rate: number) => void;
 
   addSavings: (s: Omit<SavingsAccount, 'id'>) => void;
   updateSavings: (id: string, patch: Partial<SavingsAccount>) => void;
@@ -60,6 +97,10 @@ interface FinstarState {
   updateGemel: (id: string, patch: Partial<GemelFund>) => void;
   addGemel: (g: Omit<GemelFund, 'id'>) => void;
   deleteGemel: (id: string) => void;
+
+  addHishtalmut: (h: Omit<HishtalmutFund, 'id'>) => void;
+  updateHishtalmut: (id: string, patch: Partial<HishtalmutFund>) => void;
+  deleteHishtalmut: (id: string) => void;
 
   updatePension: (id: string, patch: Partial<PensionFund>) => void;
 
@@ -86,17 +127,18 @@ interface FinstarState {
 export const useStore = create<FinstarState>()(
   persist(
     (set) => ({
-      transactions: mockTransactions,
-      recurring: mockRecurring,
-      lots: mockLots,
-      prices: mockPrices,
+      transactions: [],
+      recurring: [],
+      lots: [],
+      prices: {},
       usdIls: USD_ILS,
-      savings: mockSavings,
-      gemel: mockGemel,
-      pension: mockPension,
-      income: mockIncome,
-      goals: mockGoals,
-      journal: mockJournal,
+      savings: [],
+      gemel: [],
+      hishtalmut: [],
+      pension: [],
+      income: [],
+      goals: [],
+      journal: [],
       lastPriceUpdate: '',
       categories: INITIAL_CATEGORIES,
       categoryRules: {},
@@ -153,6 +195,7 @@ export const useStore = create<FinstarState>()(
         set((s) => ({ lots: s.lots.map((l) => l.id === id ? { ...l, ...patch } : l) })),
       deleteLot: (id) => set((s) => ({ lots: s.lots.filter((l) => l.id !== id) })),
       updatePrices: (prices) => set({ prices, lastPriceUpdate: new Date().toISOString() }),
+      setUsdIls: (rate) => set({ usdIls: rate }),
 
       addSavings: (sv) => set((s) => ({ savings: [...s.savings, { ...sv, id: nanoid() }] })),
       updateSavings: (id, patch) =>
@@ -163,6 +206,11 @@ export const useStore = create<FinstarState>()(
       updateGemel: (id, patch) =>
         set((s) => ({ gemel: s.gemel.map((g) => g.id === id ? { ...g, ...patch } : g) })),
       deleteGemel: (id) => set((s) => ({ gemel: s.gemel.filter((g) => g.id !== id) })),
+
+      addHishtalmut: (h) => set((s) => ({ hishtalmut: [...s.hishtalmut, { ...h, id: nanoid() }] })),
+      updateHishtalmut: (id, patch) =>
+        set((s) => ({ hishtalmut: s.hishtalmut.map((h) => h.id === id ? { ...h, ...patch } : h) })),
+      deleteHishtalmut: (id) => set((s) => ({ hishtalmut: s.hishtalmut.filter((h) => h.id !== id) })),
 
       updatePension: (id, patch) =>
         set((s) => ({ pension: s.pension.map((p) => p.id === id ? { ...p, ...patch } : p) })),
@@ -244,6 +292,7 @@ export const useStore = create<FinstarState>()(
           usdIls: USD_ILS,
           savings: [],
           gemel: [],
+          hishtalmut: [],
           pension: [],
           income: [],
           goals: [],
@@ -257,7 +306,10 @@ export const useStore = create<FinstarState>()(
         journal: [...s.journal.filter((j) => !(j.year === e.year && j.month === e.month)), { ...e, id: nanoid() }],
       })),
     }),
-    { name: 'finstar-store' }
+    {
+      name: 'finstar-store',
+      storage: createJSONStorage(() => serverStorage),
+    }
   )
 );
 

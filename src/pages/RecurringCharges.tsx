@@ -188,7 +188,7 @@ export default function RecurringCharges() {
       </div>
 
       {/* KPIs */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
           <div className="text-xs font-medium text-slate-400 uppercase tracking-wide">סה"כ חיובים חודשיים</div>
           <div className="text-2xl font-bold text-slate-900 mt-1">{fmtCurrency(totalMonthly)}</div>
@@ -625,7 +625,7 @@ function ChargeForm({ form, setForm, categoryList }: {
           className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:border-blue-300 focus:ring-2 focus:ring-blue-100" />
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">סכום (₪) <span className="text-red-400">*</span></label>
           <input type="number" value={form.amount} onChange={e => setForm({...form, amount: e.target.value})}
@@ -638,7 +638,7 @@ function ChargeForm({ form, setForm, categoryList }: {
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">כרטיס/מקור</label>
           <input value={form.card} onChange={e => setForm({...form, card: e.target.value})}

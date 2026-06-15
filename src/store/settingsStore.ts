@@ -1,15 +1,6 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
-export interface FirebaseConfig {
-  apiKey: string;
-  authDomain: string;
-  projectId: string;
-  storageBucket: string;
-  messagingSenderId: string;
-  appId: string;
-}
-
 export interface SettingsState {
   // Stock API
   corsProxy: string;           // e.g. 'https://corsproxy.io/?'
@@ -23,9 +14,23 @@ export interface SettingsState {
   notifyRecurringCharge: boolean;
   notifyPortfolioChange: number; // % threshold, 0 = disabled
 
-  // Firebase
-  firebaseConfig: FirebaseConfig | null;
-  firebaseEnabled: boolean;
+  // Portfolio summary
+  notifyPortfolioSummary: boolean;
+  portfolioSummaryTime: string;   // "HH:MM" local time
+  portfolioSummaryDays: number[]; // 0=Sun…6=Sat; empty array = every day
+
+  // Telegram incoming messages (polling)
+  telegramPollingEnabled: boolean;
+  lastTelegramUpdateId: number; // last processed update_id (for offset)
+
+  // Automatic Telegram summaries
+  dailySummaryEnabled: boolean;
+  dailySummaryTime: string;       // "HH:MM"
+  weeklySummaryEnabled: boolean;  // sent every Sunday at 09:00
+  monthlySummaryEnabled: boolean; // sent on 1st of month at 09:00
+  lastDailySummaryDate: string;   // "YYYY-MM-DD"
+  lastWeeklySummaryKey: string;   // "YYYY-Www"
+  lastMonthlySummaryKey: string;  // "YYYY-MM"
 
   // Actions
   update: (patch: Partial<Omit<SettingsState, 'update'>>) => void;
@@ -34,7 +39,7 @@ export interface SettingsState {
 export const useSettings = create<SettingsState>()(
   persist(
     (set) => ({
-      corsProxy: 'https://corsproxy.io/?',
+      corsProxy: '/api/yahoo/',
       stockRefreshSec: 60,
 
       telegramBotToken: '',
@@ -44,8 +49,20 @@ export const useSettings = create<SettingsState>()(
       notifyRecurringCharge: true,
       notifyPortfolioChange: 3,
 
-      firebaseConfig: null,
-      firebaseEnabled: false,
+      notifyPortfolioSummary: false,
+      portfolioSummaryTime: '09:00',
+      portfolioSummaryDays: [],
+
+      telegramPollingEnabled: false,
+      lastTelegramUpdateId: 0,
+
+      dailySummaryEnabled: false,
+      dailySummaryTime: '20:00',
+      weeklySummaryEnabled: false,
+      monthlySummaryEnabled: false,
+      lastDailySummaryDate: '',
+      lastWeeklySummaryKey: '',
+      lastMonthlySummaryKey: '',
 
       update: (patch) => set((s) => ({ ...s, ...patch })),
     }),

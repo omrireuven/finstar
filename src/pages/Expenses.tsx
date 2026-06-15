@@ -382,8 +382,8 @@ export default function Expenses() {
       </Card>
 
       {/* Table */}
-      <Card className="p-0 overflow-hidden">
-        <table className="w-full text-sm">
+      <Card className="p-0 overflow-x-auto">
+        <table className="w-full text-sm min-w-[700px]">
           <thead>
             <tr className="border-b border-slate-100 bg-slate-50">
               <th className="text-right px-4 py-3 text-slate-500 font-medium">תאריך</th>

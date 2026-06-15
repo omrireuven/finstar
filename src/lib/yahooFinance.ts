@@ -7,6 +7,9 @@
 const YF_BASE = 'https://query1.finance.yahoo.com';
 
 function proxied(proxy: string, url: string): string {
+  if (proxy === '/api/yahoo/') {
+    return url.replace('https://query1.finance.yahoo.com/', '/api/yahoo/');
+  }
   if (!proxy) return url;
   return proxy + encodeURIComponent(url);
 }

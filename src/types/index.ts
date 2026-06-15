@@ -81,6 +81,7 @@ export interface SavingsAccount {
   openDate: string;
   open: boolean;
   link?: string;
+  logoUrl?: string;
 }
 
 export interface GemelFund {
@@ -89,9 +90,41 @@ export interface GemelFund {
   company: string;
   balance: number;
   track: string;
+  /** דמי ניהול מצבירה — % שנתי מהיתרה */
   managementFee: number;
+  /** דמי ניהול מהפקדות — % מכל הפקדה חדשה */
+  depositFee: number;
+  /** תשואה — כפי שמופיעה בפורטל הקרן (כוללת ריבית דריבית) */
   annualReturn: number;
-  totalReturn: number;
+  /** % of salary employee contributes */
+  employeeContribution: number;
+  /** % of salary employer contributes */
+  employerContribution: number;
+  /** Gross salary basis for monthly deposit calculation */
+  salary: number;
+  link?: string;
+  logoUrl?: string;
+}
+
+export interface HishtalmutFund {
+  id: string;
+  name: string;
+  company: string;
+  balance: number;
+  track: string;
+  managementFee: number;
+  /** Annual return % — cumulative is computed via compound interest from openDate */
+  annualReturn: number;
+  /** % of salary employee contributes (typically 2.5%) */
+  employeeContribution: number;
+  /** % of salary employer contributes (typically 7.5%) */
+  employerContribution: number;
+  /** Gross salary basis for monthly deposit calculations */
+  salary: number;
+  /** Date deposits started (YYYY-MM-DD) — determines 6-year lock expiry */
+  openDate?: string;
+  link?: string;
+  logoUrl?: string;
 }
 
 export interface PensionFund {
@@ -108,6 +141,8 @@ export interface PensionFund {
   birthYear: number;
   salary: number;         // gross salary basis for contribution calculations
   expectedReturn: number; // expected annual return % for projection
+  link?: string;
+  logoUrl?: string;
 }
 
 export interface IncomeEntry {

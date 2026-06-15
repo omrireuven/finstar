@@ -99,7 +99,7 @@ export default function Trends() {
       </div>
 
       {/* ── Annual KPI cards ────────────────────────────────────────────── */}
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
           <div className="text-sm text-slate-500">סה"כ הוצאות {year}</div>
           {totalExpenses === 0 ? (
@@ -136,7 +136,7 @@ export default function Trends() {
       {/* ── 12-month grid ───────────────────────────────────────────────── */}
       <div>
         <h2 className="font-semibold text-slate-700 text-sm mb-3">לחץ על חודש לפירוט</h2>
-        <div className="grid grid-cols-4 lg:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
           {MONTHS_HE.map((label, i) => {
             const month = i + 1;
             const entry = getEntry(month);
@@ -225,7 +225,7 @@ export default function Trends() {
             )}
 
             {/* Month KPI cards */}
-            <div className="grid grid-cols-4 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               <Card>
                 <div className="text-sm text-slate-500">סה"כ הוצאות</div>
                 <div className="text-xl font-bold text-red-500">{fmtCurrency(mExp)}</div>

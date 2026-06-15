@@ -38,7 +38,7 @@ function MortgageSim() {
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {[
           { label: 'יתרת משכנתא (₪)', key: balance, setter: setBalance },
           { label: 'ריבית שנתית (%)', key: rate, setter: setRate },
@@ -53,7 +53,7 @@ function MortgageSim() {
         ))}
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card className="bg-slate-50">
           <div className="text-sm font-medium text-slate-600 mb-3">ללא תוספת</div>
           <div className="space-y-2 text-sm">
@@ -104,7 +104,7 @@ function SavingsSim() {
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {[
           { label: 'יעד חיסכון (₪)', val: target, set: setTarget },
           { label: 'חיסכון חודשי (₪)', val: monthly, set: setMonthly },
@@ -117,7 +117,7 @@ function SavingsSim() {
         ))}
       </div>
 
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card>
           <div className="text-sm text-slate-500">זמן להגיע ליעד</div>
           <div className="text-2xl font-bold text-blue-600">{fmt(years, 1)} שנים</div>
@@ -175,7 +175,7 @@ function InvestmentSim() {
 
   return (
     <div className="space-y-5">
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {[
           { label: 'השקעה חודשית (₪)', val: monthly, set: setMonthly },
           { label: 'תשואה שנתית (%)', val: rate, set: setRate },
@@ -188,7 +188,7 @@ function InvestmentSim() {
         ))}
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
           <div className="text-sm text-slate-500">שווי עתידי</div>
           <div className="text-2xl font-bold text-blue-600">{fmtCurrency(finalValue)}</div>

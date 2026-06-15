@@ -64,7 +64,7 @@ export default function Income() {
         </button>
       </div>
 
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
           <div className="text-sm text-slate-500">הכנסה נטו החודש</div>
           <div className="text-2xl font-bold text-green-600">{fmtCurrency(monthIncome)}</div>
@@ -91,8 +91,8 @@ export default function Income() {
         </ResponsiveContainer>
       </Card>
 
-      <Card className="p-0 overflow-hidden">
-        <table className="w-full text-sm">
+      <Card className="p-0 overflow-x-auto">
+        <table className="w-full text-sm min-w-[500px]">
           <thead>
             <tr className="bg-slate-50 border-b border-slate-100">
               {['תאריך', 'מקור', 'סוג', 'ברוטו', 'נטו', ''].map((h) => (
