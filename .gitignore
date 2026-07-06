@@ -21,4 +21,8 @@ dist-ssr
 *.ntvs*
 *.njsproj
 *.sln
-*.sw?
+# Local database and settings files
+finstar-db.json
+finstar-settings.json
+finstar-settings.json.bak
+data/

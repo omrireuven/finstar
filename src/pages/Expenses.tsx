@@ -1,25 +1,30 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
-import { Upload, Plus, Search, Download, Lightbulb, X, Pencil, Link2, Trash2, CheckCircle2, CheckCheck, Repeat2, Check, Star, RotateCcw } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Upload, Plus, Search, Download, Lightbulb, X, Pencil, Link2, Trash2, CheckCircle2, CheckCheck, Repeat2, Check, Star, RotateCcw, Loader2, RefreshCw, MoreHorizontal, ChevronDown, ChevronUp, Sparkles, Landmark } from 'lucide-react';
 import { useStore, useCategoryList, useCategoryColorMap, useAllTransactions } from '../store';
+import { useSettings } from '../store/settingsStore';
 import Card from '../components/common/Card';
 import Modal from '../components/common/Modal';
 import { fmtCurrency, fmtDate } from '../utils/format';
 import type { Transaction, Category } from '../types';
 import { parseCalVisa, parseIsracard, parseMax, parseGenericCSV } from '../utils/parsers';
+import { llmAnalyzeNewTransactions, llmCategorizeBatch } from '../utils/llmCategorizer';
+import { getLocalLinkRecommendations } from '../utils/syncHelpers';
 import { nanoid } from '../utils/nanoid';
 import * as XLSX from 'xlsx';
-
+import toast from 'react-hot-toast';
 const PAGE_SIZE = 20;
 
 export default function Expenses() {
-  const { transactions, recurring, categoryRules, addTransactions, overrideCategory,
-          deleteTransaction, updateTransaction, setCategoryRule, deleteCategoryRule } = useStore();
+  const { transactions, recurring, addTransactions, updateTransaction, deleteTransaction, categoryRules, categoryRulesMeta, setCategoryRule, aiRecommendations, setAiRecommendations, markTransactionsAsAiProcessed, resetAiProcessing, income, deleteIncome, addIgnoredIdentifier, overrideCategory, deleteCategoryRule, updateRecurring } = useStore();
   const allTransactions = useAllTransactions();
   const categoryList = useCategoryList();
   const catColors = useCategoryColorMap();
+  const navigate = useNavigate();
 
   const [search, setSearch] = useState('');
   const [catFilter, setCatFilter] = useState<Category | 'הכל'>('הכל');
+  const [sourceFilter, setSourceFilter] = useState<string | 'הכל'>('הכל');
   const [monthFilter, setMonthFilter] = useState('');
   const [pendingFilter, setPendingFilter] = useState(false);
   const [linkedFilter, setLinkedFilter] = useState(false);
@@ -27,6 +32,7 @@ export default function Expenses() {
   const [page, setPage] = useState(1);
   const [importModal, setImportModal] = useState(false);
   const [addModal, setAddModal] = useState(false);
+  const [addTxnTypeModal, setAddTxnTypeModal] = useState(false);
   const [editTxn, setEditTxn] = useState<Transaction | null>(null);
   const [importing, setImporting] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -35,6 +41,7 @@ export default function Expenses() {
   const [rulesModal, setRulesModal] = useState(false);
   const [rulesTab, setRulesTab] = useState<'pending' | 'saved'>('pending');
   const [draftCats, setDraftCats] = useState<Record<string, Category>>({});
+  const [aiDebugLog, setAiDebugLog] = useState<any>(null);
 
   // Inline recurring link popover (real transactions)
   const [linkingTxnId, setLinkingTxnId] = useState<string | null>(null);
@@ -44,6 +51,15 @@ export default function Expenses() {
   const [refreshVirtId, setRefreshVirtId] = useState<string | null>(null);
   const [refreshAmt, setRefreshAmt] = useState('');
 
+  // AI Suggestions
+  const [aiSuggestions, setAiSuggestions] = useState<Record<string, import('../types').AiSuggestion>>({});
+  const [isSingleAILoading, setIsSingleAILoading] = useState(false);
+  const [aiBatchLoading, setAiBatchLoading] = useState(false);
+  const [aiBatchConfidences, setAiBatchConfidences] = useState<Record<string, number>>({});
+  const [txnDetailsModal, setTxnDetailsModal] = useState<Transaction | null>(null);
+  const [isEditingCategory, setIsEditingCategory] = useState(false);
+  const [editCategoryVal, setEditCategoryVal] = useState<Category>('אחר');
+  const [expandedAiTxn, setExpandedAiTxn] = useState<string | null>(null);
   // Import dedup preview
   type DupResult = { fresh: Transaction[]; dupes: number; total: number; allDupes: boolean };
   const [dupResult, setDupResult] = useState<DupResult | null>(null);
@@ -69,6 +85,7 @@ export default function Expenses() {
   const [editForm, setEditForm] = useState(BLANK_FORM);
 
   const months = [...new Set(allTransactions.map((t) => t.date.slice(0, 7)))].sort().reverse();
+  const sources = [...new Set(allTransactions.map((t) => t.source))].filter(Boolean).sort();
 
   // All unique business names with NO rule at all (neither auto-category nor __manual__)
   // Virtual transactions are excluded — their names are user-defined recurring charge names.
@@ -83,11 +100,139 @@ export default function Expenses() {
     return Object.entries(map).sort((a, b) => b[1].count - a[1].count);
   })();
 
-  const savedRules   = Object.entries(categoryRules).filter(([, v]) => v !== '__manual__');
-  const manualRules  = Object.entries(categoryRules).filter(([, v]) => v === '__manual__');
+  const [rulesSearch, setRulesSearch] = useState('');
+
+  const filteredPendingBusinesses = useMemo(() => {
+    const query = rulesSearch.trim().toLowerCase();
+    if (!query) return pendingBusinesses;
+    return pendingBusinesses.filter(([business]) => business.toLowerCase().includes(query));
+  }, [pendingBusinesses, rulesSearch]);
+
+  const sortedSavedRules = useMemo(() => {
+    return Object.entries(categoryRules)
+      .filter(([, v]) => v !== '__manual__')
+      .sort((a, b) => {
+        const metaA = categoryRulesMeta?.[a[0]];
+        const metaB = categoryRulesMeta?.[b[0]];
+        const timeA = metaA?.date ? new Date(metaA.date).getTime() : 0;
+        const timeB = metaB?.date ? new Date(metaB.date).getTime() : 0;
+        return timeB - timeA;
+      });
+  }, [categoryRules, categoryRulesMeta]);
+
+  const sortedManualRules = useMemo(() => {
+    return Object.entries(categoryRules)
+      .filter(([, v]) => v === '__manual__')
+      .sort((a, b) => {
+        const metaA = categoryRulesMeta?.[a[0]];
+        const metaB = categoryRulesMeta?.[b[0]];
+        const timeA = metaA?.date ? new Date(metaA.date).getTime() : 0;
+        const timeB = metaB?.date ? new Date(metaB.date).getTime() : 0;
+        return timeB - timeA;
+      });
+  }, [categoryRules, categoryRulesMeta]);
+
+  const filteredSavedRules = useMemo(() => {
+    const query = rulesSearch.trim().toLowerCase();
+    if (!query) return sortedSavedRules;
+    return sortedSavedRules.filter(([business, category]) =>
+      business.toLowerCase().includes(query) || category.toLowerCase().includes(query)
+    );
+  }, [sortedSavedRules, rulesSearch]);
+
+  const filteredManualRules = useMemo(() => {
+    const query = rulesSearch.trim().toLowerCase();
+    if (!query) return sortedManualRules;
+    return sortedManualRules.filter(([business]) =>
+      business.toLowerCase().includes(query)
+    );
+  }, [sortedManualRules, rulesSearch]);
 
   const pendingCount = allTransactions.filter((t) => t.isVirtual).length;
   const linkedCount  = allTransactions.filter((t) => !!t.recurringId && !t.isVirtual).length;
+
+  const activeAiDeletes = useMemo(() => {
+    return aiRecommendations?.toDelete?.filter(d => transactions.some(t => t.id === d.transactionId)) || [];
+  }, [aiRecommendations?.toDelete, transactions]);
+
+  const activeAiIncomeDeletes = useMemo(() => {
+    return aiRecommendations?.incomesToDelete?.filter(d => income.some(i => i.id === d.incomeId)) || [];
+  }, [aiRecommendations?.incomesToDelete, income]);
+
+  const activeAiLinks = useMemo(() => {
+    return aiRecommendations?.toLink?.filter(l => transactions.some(t => t.id === l.transactionId)) || [];
+  }, [aiRecommendations?.toLink, transactions]);
+
+  const analyzeSingleTransaction = async (txn: Transaction) => {
+    setIsSingleAILoading(true);
+    try {
+      const recommendations = await llmAnalyzeNewTransactions(
+        [txn],
+        [], // incomes
+        recurring,
+        categoryList,
+        categoryRules
+      );
+
+      const currentRecs = aiRecommendations || { toDelete: [], toLink: [], categorizations: {}, incomesToDelete: [], incomeCategorizations: {} };
+      
+      const newRecs = {
+        toDelete: [...currentRecs.toDelete.filter(d => d.transactionId !== txn.id), ...(recommendations.toDelete || [])],
+        toLink: [...currentRecs.toLink.filter(l => l.transactionId !== txn.id), ...(recommendations.toLink || [])],
+        categorizations: { ...currentRecs.categorizations, ...recommendations.categorizations },
+        incomesToDelete: currentRecs.incomesToDelete,
+        incomeCategorizations: currentRecs.incomeCategorizations
+      };
+      
+      if (recommendations.categorizations[txn.business]) {
+        const aiCat = recommendations.categorizations[txn.business];
+        const updatedFields = { 
+          category: aiCat.category as Category, 
+          aiRecommendation: 'סווג אוטומטית על ידי AI',
+          aiConfidence: aiCat.confidence
+        };
+        updateTransaction(txn.id, updatedFields);
+        setCategoryRule(txn.business, aiCat.category as Category);
+        setTxnDetailsModal(prev => prev && prev.id === txn.id ? { ...prev, ...updatedFields } : prev);
+      }
+
+      setAiRecommendations(newRecs);
+      toast.success('בדיקת AI הושלמה לעסקה זו');
+    } catch (e: any) {
+      toast.error('שגיאה בסריקת ה-AI: ' + e.message);
+    } finally {
+      setIsSingleAILoading(false);
+    }
+  };
+
+  const handleBatchAiCategorize = async () => {
+    if (pendingBusinesses.length === 0) return;
+    setAiBatchLoading(true);
+    try {
+      // Pick one transaction per pending business to get the amount (optional, helps LLM context)
+      const txnsToAnalyze = pendingBusinesses.map(([biz]) => {
+        const tx = transactions.find(t => t.business === biz);
+        return { business: biz, amount: tx?.amount || 0 };
+      });
+      const results = await llmCategorizeBatch(txnsToAnalyze, categoryList, categoryRules);
+      
+      const newDrafts = { ...draftCats };
+      const newConfidences = { ...aiBatchConfidences };
+      for (const [biz, res] of Object.entries(results)) {
+        if (res.category && categoryList.includes(res.category)) {
+          newDrafts[biz] = res.category;
+          newConfidences[biz] = res.confidence ?? 0;
+        }
+      }
+      setDraftCats(newDrafts);
+      setAiBatchConfidences(newConfidences);
+      toast.success('זיהוי AI הושלם. אנא אשר את ההצעות.');
+    } catch (e: any) {
+      toast.error('שגיאה בזיהוי AI: ' + e.message);
+    } finally {
+      setAiBatchLoading(false);
+    }
+  };
 
   // Detect potential duplicate transactions: same business + same amount + ≤3 days apart
   const potentialDupes = useMemo(() => {
@@ -114,16 +259,69 @@ export default function Expenses() {
     return pairs;
   }, [transactions]);
 
-  const filtered = allTransactions
+  const virtualIncomesToDisplay = useMemo(() => {
+    return activeAiIncomeDeletes.map(d => {
+      const inc = income.find(i => i.id === d.incomeId);
+      if (!inc) return null;
+      return {
+        id: inc.id,
+        date: inc.date,
+        business: inc.source,
+        amount: inc.netAmount,
+        currency: 'ILS',
+        category: 'העברה/המרה',
+        source: 'הכנסה מומלצת למחיקה',
+        isVirtual: false,
+        aiRecommendation: d.reason,
+        isIncomeToDelete: true
+      } as unknown as Transaction;
+    }).filter(Boolean) as Transaction[];
+  }, [activeAiIncomeDeletes, income]);
+
+  const combinedTransactions = [...allTransactions, ...virtualIncomesToDisplay];
+
+  const filtered = combinedTransactions
     .filter((t) => {
       if (pendingFilter && !t.isVirtual) return false;
       if (linkedFilter && (!t.recurringId || t.isVirtual)) return false;
-      if (search && !t.business.toLowerCase().includes(search.toLowerCase()) && !t.category.includes(search)) return false;
+      if (search) {
+        const query = search.trim().toLowerCase();
+        const businessMatch = t.business.toLowerCase().includes(query);
+        const categoryMatch = t.category.toLowerCase().includes(query);
+        const sourceMatch = t.source ? t.source.toLowerCase().includes(query) : false;
+        const notesMatch = t.notes ? t.notes.toLowerCase().includes(query) : false;
+        const amountMatch = t.amount.toString().includes(query) || fmtCurrency(t.amount).includes(query) || (t.currency && t.currency.toLowerCase().includes(query));
+        const dateMatch = t.date.includes(query) || fmtDate(t.date).includes(query);
+        const aiMatch = t.aiConfidence !== undefined && `${t.aiConfidence}%`.includes(query);
+        let metadataMatch = false;
+        if (t.metadata && typeof t.metadata === 'object') {
+          try {
+            metadataMatch = JSON.stringify(t.metadata).toLowerCase().includes(query);
+          } catch {}
+        }
+        if (!businessMatch && !categoryMatch && !sourceMatch && !notesMatch && !amountMatch && !dateMatch && !aiMatch && !metadataMatch) {
+          return false;
+        }
+      }
       if (catFilter !== 'הכל' && t.category !== catFilter) return false;
+      if (sourceFilter !== 'הכל' && t.source !== sourceFilter) return false;
       if (monthFilter && !t.date.startsWith(monthFilter)) return false;
       return true;
     })
-    .sort((a, b) => b.date.localeCompare(a.date));
+    .sort((a, b) => {
+      if (aiRecommendations) {
+        const aIsRec = aiRecommendations.toDelete?.some(d => d.transactionId === a.id) || 
+                       aiRecommendations.toLink?.some(l => l.transactionId === a.id) || 
+                       (a as any).isIncomeToDelete;
+        const bIsRec = aiRecommendations.toDelete?.some(d => d.transactionId === b.id) || 
+                       aiRecommendations.toLink?.some(l => l.transactionId === b.id) || 
+                       (b as any).isIncomeToDelete;
+                       
+        if (aIsRec && !bIsRec) return -1;
+        if (!aIsRec && bIsRec) return 1;
+      }
+      return b.date.localeCompare(a.date);
+    });
 
   const total = filtered.reduce((a, t) => a + t.amount, 0);
   const paginated = filtered.slice(0, page * PAGE_SIZE);
@@ -314,17 +512,41 @@ export default function Expenses() {
               </span>
             )}
           </button>
-          <button onClick={() => setAddModal(true)} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 hover:bg-slate-50">
-            <Plus size={16} /> הוסף ידנית
-          </button>
+
           <button onClick={exportExcel} className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-700 hover:bg-slate-50">
             <Download size={16} /> ייצוא
           </button>
-          <button onClick={() => setImportModal(true)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 rounded-xl text-sm text-white hover:bg-blue-700">
-            <Upload size={16} /> יבא CSV/XLSX
+          <button onClick={() => setAddTxnTypeModal(true)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 rounded-xl text-sm text-white hover:bg-blue-700">
+            <Plus size={16} /> הוספת תנועות
           </button>
         </div>
       </div>
+
+      {aiRecommendations && (activeAiDeletes.length > 0 || activeAiLinks.length > 0) && (
+        <Card className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-150 p-4 rounded-xl flex items-center justify-between shadow-sm">
+          <div className="flex items-center gap-3">
+            <div className="bg-blue-100 text-blue-700 p-2.5 rounded-lg">
+              <Sparkles size={20} className="animate-pulse" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-blue-900 text-sm">המלצות AI חדשות לטיפול</h3>
+              <p className="text-xs text-blue-700 mt-0.5">
+                נמצאו {activeAiDeletes.length} עסקאות כפולות למחיקה ו-{activeAiLinks.length} התאמות לחיובים קבועים.
+              </p>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            {aiRecommendations.log && (
+              <button
+                onClick={() => setAiDebugLog(aiRecommendations.log!)}
+                className="px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-100 hover:bg-blue-200 rounded-lg transition-colors"
+              >
+                לוג ניתוח AI
+              </button>
+            )}
+          </div>
+        </Card>
+      )}
 
       {/* Filters */}
       <Card className="flex flex-wrap gap-3 items-center py-3">
@@ -342,6 +564,11 @@ export default function Expenses() {
           className="border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 bg-white">
           <option value="הכל">כל הקטגוריות</option>
           {categoryList.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+        <select value={sourceFilter} onChange={(e) => { setSourceFilter(e.target.value); setPage(1); }}
+          className="border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 bg-white">
+          <option value="הכל">כל המקורות</option>
+          {sources.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
         <button
           onClick={() => { setPendingFilter((v) => !v); setLinkedFilter(false); setPage(1); }}
@@ -381,6 +608,8 @@ export default function Expenses() {
         </button>
       </Card>
 
+      {/* AI Scan Banner (Removed) */}
+
       {/* Table */}
       <Card className="p-0 overflow-x-auto">
         <table className="w-full text-sm min-w-[700px]">
@@ -395,32 +624,110 @@ export default function Expenses() {
             </tr>
           </thead>
           <tbody>
-            {paginated.map((t) => (
-              <tr
-                key={t.id}
-                className={`border-b transition-colors ${
-                  t.isVirtual
-                    ? 'border-violet-100 bg-violet-50/40 hover:bg-violet-50/70'
-                    : 'border-slate-50 hover:bg-slate-50'
-                }`}
-              >
-                <td className="px-4 py-3 text-slate-600">{fmtDate(t.date)}</td>
-                <td className="px-4 py-3">
-                  <div className="font-medium text-slate-900">{t.business}</div>
-                  {t.notes && <div className="text-xs text-slate-400">{t.notes}</div>}
-                  {t.isVirtual ? (
-                    <div className="inline-flex items-center gap-1 mt-0.5 text-[10px] bg-violet-50 text-violet-500 border border-violet-200 rounded-full px-1.5 py-0.5">
-                      <Repeat2 size={8} /> חיוב קבוע — ממתין לאישור
-                    </div>
-                  ) : t.recurringId && (() => {
-                    const rec = recurring.find(r => r.id === t.recurringId);
-                    return rec ? (
-                      <div className="inline-flex items-center gap-1 mt-0.5 text-[10px] bg-blue-50 text-blue-600 border border-blue-100 rounded-full px-1.5 py-0.5">
-                        <Link2 size={8} /> {rec.name}
+            {paginated.map((t) => {
+              const aiDel = aiRecommendations?.toDelete?.find((r) => r.transactionId === t.id);
+              const aiLink = aiRecommendations?.toLink?.find((r) => r.transactionId === t.id);
+              
+              let rowBg = 'border-slate-50 hover:bg-slate-50';
+              if (t.isVirtual) {
+                rowBg = 'border-violet-100 bg-violet-50/40 hover:bg-violet-50/70';
+              } else if (aiDel || (t as any).isIncomeToDelete) {
+                rowBg = 'border-red-100 bg-red-50/60 hover:bg-red-100/60 transition-colors shadow-[inset_4px_0_0_0_rgb(239,68,68)]';
+              } else if (aiLink) {
+                rowBg = 'border-blue-100 bg-blue-50/60 hover:bg-blue-100/60 transition-colors shadow-[inset_4px_0_0_0_rgb(59,130,246)]';
+              }
+
+              return (
+                <tr key={t.id} onClick={() => setTxnDetailsModal(t)} className={`border-b transition-colors cursor-pointer ${rowBg}`}>
+                  <td className="px-4 py-3 text-slate-600">{fmtDate(t.date)}</td>
+                  <td className="px-4 py-3">
+                    <div className="font-medium text-slate-900">{t.business}</div>
+                    {t.notes && <div className="text-xs text-slate-400">{t.notes}</div>}
+                    
+                    {t.isVirtual ? (
+                      <div className="inline-flex items-center gap-1 mt-0.5 text-[10px] bg-violet-50 text-violet-500 border border-violet-200 rounded-full px-1.5 py-0.5">
+                        <Repeat2 size={8} /> חיוב קבוע — ממתין לאישור
                       </div>
-                    ) : null;
-                  })()}
-                </td>
+                    ) : t.recurringId ? (() => {
+                      const rec = recurring.find(r => r.id === t.recurringId);
+                      return rec ? (
+                        <div className="inline-flex items-center gap-1 mt-0.5 text-[10px] bg-blue-50 text-blue-600 border border-blue-100 rounded-full px-1.5 py-0.5">
+                          <Link2 size={8} /> {rec.name}
+                        </div>
+                      ) : null;
+                    })() : null}
+
+                    {aiDel && (
+                      <div className="inline-flex items-center gap-1.5 mt-1 text-[10.5px] bg-red-50 text-red-700 border border-red-200 rounded-full px-2 py-0.5 font-medium">
+                        <span>המלצת AI: כפילות מומלצת למחיקה ({aiDel.reason})</span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setAiRecommendations({
+                              ...aiRecommendations!,
+                              toDelete: aiRecommendations!.toDelete.filter(d => d.transactionId !== t.id)
+                            });
+                          }}
+                          className="hover:bg-red-200 rounded-full p-0.5 text-red-500"
+                          title="התעלם מהמלצה"
+                        >
+                          <X size={8} />
+                        </button>
+                      </div>
+                    )}
+
+                    {(t as any).isIncomeToDelete && (
+                      <div className="inline-flex items-center gap-1.5 mt-1 text-[10.5px] bg-red-50 text-red-700 border border-red-200 rounded-full px-2 py-0.5 font-medium">
+                        <span>המלצת AI: המרת מט"ח שהיא אינה הוצאה או הכנסה ({t.aiRecommendation})</span>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setAiRecommendations({
+                              ...aiRecommendations!,
+                              incomesToDelete: aiRecommendations!.incomesToDelete?.filter(d => d.incomeId !== t.id)
+                            });
+                          }}
+                          className="hover:bg-red-200 rounded-full p-0.5 text-red-500"
+                          title="התעלם מהמלצה"
+                        >
+                          <X size={8} />
+                        </button>
+                      </div>
+                    )}
+
+                    {aiLink && (() => {
+                      const rec = recurring.find(r => r.id === aiLink.recurringId);
+                      const isExpanded = expandedAiTxn === t.id;
+                      return (
+                        <div className="mt-1 flex flex-col gap-1 max-w-lg">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedAiTxn(isExpanded ? null : t.id);
+                            }}
+                            className="inline-flex items-center gap-1.5 self-start text-[10.5px] bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5 font-medium hover:bg-blue-100 transition-colors"
+                          >
+                            <Sparkles size={8} className="text-blue-500 animate-pulse" />
+                            <span>מומלץ לקשר לחיוב קבוע: "{rec?.name || 'חיוב קבוע'}"</span>
+                            {isExpanded ? <ChevronUp size={10} /> : <ChevronDown size={10} />}
+                          </button>
+                          
+                          {isExpanded && (
+                            <div className="bg-white/95 border border-blue-100 rounded-lg p-2.5 text-xs text-slate-700 space-y-1.5 shadow-sm mt-0.5">
+                              <div className="font-semibold text-blue-800">הסבר המערכת:</div>
+                              <div className="leading-relaxed">{aiLink.reason}</div>
+                              {rec && (
+                                <div className="grid grid-cols-2 gap-2 pt-1 border-t border-slate-100 text-[11px] text-slate-500">
+                                  <div>סכום קבוע: <span className="font-medium text-slate-700">{fmtCurrency(rec.amount)}</span></div>
+                                  <div>יום בחודש: <span className="font-medium text-slate-700">{rec.dayOfMonth}</span></div>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+                  </td>
                 <td className="px-4 py-3">
                   {t.isVirtual ? (
                     /* Virtual rows: plain read-only badge */
@@ -434,12 +741,13 @@ export default function Expenses() {
                     /* ── Manual business: editable dropdown ── */
                     <select
                       value={t.category}
+                      onClick={(e) => e.stopPropagation()}
                       onChange={(e) => overrideCategory(t.id, e.target.value as Category)}
                       className="text-xs px-2 py-1 rounded-full border-0 font-medium cursor-pointer ring-1 ring-inset"
                       style={{
                         backgroundColor: (catColors[t.category] ?? '#9ca3af') + '20',
                         color: catColors[t.category] ?? '#9ca3af',
-                        ringColor: (catColors[t.category] ?? '#9ca3af') + '60',
+                        ['--tw-ring-color' as any]: (catColors[t.category] ?? '#9ca3af') + '60',
                       }}
                     >
                       {categoryList.map((c) => <option key={c} value={c}>{c}</option>)}
@@ -613,6 +921,35 @@ export default function Expenses() {
                     </div>
                   ) : (
                     <div className="flex items-center gap-1">
+                      {aiLink && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            // Find corresponding virtual transaction for this month
+                            const monthKey = t.date.slice(0, 7);
+                            const virt = allTransactions.find(
+                              v => v.isVirtual && v.recurringId === aiLink.recurringId && v.date.slice(0, 7) === monthKey
+                            );
+                            if (virt) {
+                              linkVirtToExisting(virt, t);
+                            } else {
+                              linkTxnToRecurring(t, aiLink.recurringId);
+                            }
+                            
+                            // Remove from recommendations
+                            setAiRecommendations({
+                              ...aiRecommendations!,
+                              toLink: aiRecommendations!.toLink.filter(l => l.transactionId !== t.id)
+                            });
+                            toast.success('הקישור אושר בהצלחה!', { icon: '✅' });
+                          }}
+                          className="flex items-center gap-1 text-[11px] px-2 py-0.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium ml-1 shrink-0 shadow-sm cursor-pointer"
+                        >
+                          <Check size={9} />
+                          אשר קישור
+                        </button>
+                      )}
+                      
                       {/* Inline recurring link button */}
                       <div className="relative" onClick={(e) => e.stopPropagation()}>
                         <button
@@ -651,14 +988,52 @@ export default function Expenses() {
                       <button onClick={() => openEdit(t)} className="text-slate-300 hover:text-blue-500 p-1">
                         <Pencil size={13} />
                       </button>
-                      <button onClick={() => deleteTransaction(t.id)} className="text-slate-300 hover:text-red-400 p-1">
-                        <X size={14} />
-                      </button>
+                      
+                      {aiDel ? (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteTransaction(t.id);
+                            // Clear from recommendations
+                            setAiRecommendations({
+                              ...aiRecommendations!,
+                              toDelete: aiRecommendations!.toDelete.filter(d => d.transactionId !== t.id)
+                            });
+                            toast.success('העסקה הכפולה נמחקה', { icon: '🗑️' });
+                          }}
+                          title="מחק עסקה כפולה"
+                          className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      ) : (t as any).isIncomeToDelete ? (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteIncome(t.id);
+                            addIgnoredIdentifier(t.id);
+                            setAiRecommendations({
+                              ...aiRecommendations!,
+                              incomesToDelete: aiRecommendations!.incomesToDelete?.filter(d => d.incomeId !== t.id)
+                            });
+                            toast.success('המרת המט"ח נמחקה', { icon: '🗑️' });
+                          }}
+                          title="מחק המרת מט״ח"
+                          className="p-1 text-red-500 hover:text-red-700 hover:bg-red-50 rounded transition-colors"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      ) : (
+                        <button onClick={() => deleteTransaction(t.id)} className="text-slate-300 hover:text-red-400 p-1">
+                          <X size={14} />
+                        </button>
+                      )}
                     </div>
                   )}
                 </td>
               </tr>
-            ))}
+            );
+          })}
           </tbody>
         </table>
         {paginated.length < filtered.length && (
@@ -673,6 +1048,12 @@ export default function Expenses() {
       {/* Edit Transaction Modal */}
       <Modal open={!!editTxn} onClose={() => setEditTxn(null)} title={`ערוך — ${editTxn?.business ?? ''}`}>
         <div className="space-y-4">
+          {editTxn?.aiRecommendation && (
+            <div className="p-3 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 rounded-lg text-sm text-blue-800 flex items-center gap-2">
+              <Sparkles size={16} className="text-blue-600" />
+              <span className="font-semibold">המלצת מערכת:</span> {editTxn.aiRecommendation}
+            </div>
+          )}
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">תאריך</label>
             <input type="date" value={editForm.date} onChange={(e) => setEditForm({ ...editForm, date: e.target.value })}
@@ -814,7 +1195,7 @@ export default function Expenses() {
       </Modal>
 
       {/* ── Smart Categorization Modal ─────────────────────────────────── */}
-      <Modal open={rulesModal} onClose={() => setRulesModal(false)} title="קטגוריות אוטומטיות">
+      <Modal open={rulesModal} onClose={() => { setRulesModal(false); setRulesSearch(''); }} title="קטגוריות אוטומטיות">
         <div className="space-y-4">
           {/* Tabs */}
           <div className="flex rounded-xl overflow-hidden border border-slate-200">
@@ -843,27 +1224,66 @@ export default function Expenses() {
             </button>
           </div>
 
+          {/* Search Input */}
+          <div className="relative">
+            <input
+              type="text"
+              value={rulesSearch}
+              onChange={(e) => setRulesSearch(e.target.value)}
+              placeholder={rulesTab === 'pending' ? "חיפוש בממתינים לשיוך..." : "חיפוש בכללים שמורים..."}
+              className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-slate-400 bg-slate-50/50"
+            />
+            <Search className="absolute left-3 top-2.5 text-slate-400" size={16} />
+          </div>
+
           {/* ── Tab: ממתינים ─────────────────────────────────────────── */}
           {rulesTab === 'pending' && (
             <div className="space-y-2">
-              {pendingBusinesses.length === 0 ? (
+              {filteredPendingBusinesses.length === 0 ? (
                 <div className="flex flex-col items-center gap-2 py-10 text-slate-400">
-                  <CheckCircle2 size={32} className="text-green-400" />
-                  <p className="text-sm font-medium text-slate-600">כל בתי העסק משוייכים! 🎉</p>
+                  {rulesSearch ? (
+                    <>
+                      <Search size={32} className="text-slate-300" />
+                      <p className="text-sm font-medium text-slate-600">לא נמצאו ממתינים לשיוך מתאימים לחיפוש</p>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 size={32} className="text-green-400" />
+                      <p className="text-sm font-medium text-slate-600">כל בתי העסק משוייכים! 🎉</p>
+                    </>
+                  )}
                 </div>
               ) : (
                 <>
-                  <p className="text-xs text-slate-400 pb-1">
-                    בתי עסק שאין להם כלל שמור. שמור קטגוריה קבועה, או סמן "ידני" אם תרצה לבחור בכל פעם מחדש.
-                  </p>
+                  <div className="flex items-center justify-between pb-1">
+                    <p className="text-xs text-slate-400">
+                      בתי עסק שאין להם כלל שמור. שמור קטגוריה קבועה, או סמן "ידני" אם תרצה לבחור בכל פעם מחדש.
+                    </p>
+                    <button
+                      onClick={handleBatchAiCategorize}
+                      disabled={aiBatchLoading || !useSettings.getState().llmApiKey}
+                      title={!useSettings.getState().llmApiKey ? "יש להגדיר מפתח AI בהגדרות" : "זיהוי אוטומטי לכל הממתינים"}
+                      className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 text-indigo-600 rounded-lg text-xs font-medium hover:bg-indigo-100 transition-colors disabled:opacity-50"
+                    >
+                      {aiBatchLoading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+                      זיהוי ב-AI
+                    </button>
+                  </div>
                   <div className="max-h-80 overflow-y-auto space-y-2 pl-1">
-                    {pendingBusinesses.map(([business, { currentCategory, count }]) => {
+                    {filteredPendingBusinesses.map(([business, { currentCategory, count }]) => {
                       const draft = draftCats[business] ?? currentCategory;
                       return (
                         <div key={business} className="flex items-center gap-2 p-3 bg-slate-50 rounded-xl">
                           <div className="flex-1 min-w-0">
                             <div className="font-medium text-slate-800 text-sm truncate">{business}</div>
-                            <div className="text-xs text-slate-400">{count} עסקאות</div>
+                            <div className="text-xs text-slate-400 flex items-center gap-2">
+                              <span>{count} עסקאות</span>
+                              {aiBatchConfidences[business] !== undefined && (
+                                <span className={`font-medium ${aiBatchConfidences[business] >= (useSettings.getState().aiConfidenceThreshold ?? 80) ? 'text-green-600' : 'text-amber-600'}`}>
+                                  (ביטחון {aiBatchConfidences[business]}%)
+                                </span>
+                              )}
+                            </div>
                           </div>
                           <select
                             value={draft}
@@ -895,10 +1315,10 @@ export default function Expenses() {
                       );
                     })}
                   </div>
-                  {pendingBusinesses.length > 1 && (
+                  {filteredPendingBusinesses.length > 1 && (
                     <button
                       onClick={() => {
-                        pendingBusinesses.forEach(([business, { currentCategory }]) => {
+                        filteredPendingBusinesses.forEach(([business, { currentCategory }]) => {
                           setCategoryRule(business, draftCats[business] ?? currentCategory);
                         });
                         setDraftCats({});
@@ -921,56 +1341,73 @@ export default function Expenses() {
                   <Lightbulb size={32} className="text-slate-300" />
                   <p className="text-sm">אין כללים שמורים עדיין</p>
                 </div>
+              ) : filteredSavedRules.length === 0 && filteredManualRules.length === 0 ? (
+                <div className="flex flex-col items-center gap-2 py-10 text-slate-400">
+                  <Search size={32} className="text-slate-300" />
+                  <p className="text-sm">לא נמצאו כללים מתאימים לחיפוש</p>
+                </div>
               ) : (
                 <div className="max-h-80 overflow-y-auto space-y-1 pl-1">
                   {/* Auto-category rules */}
-                  {savedRules.length > 0 && (
+                  {filteredSavedRules.length > 0 && (
                     <>
                       <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide px-1 py-1">קטגוריה אוטומטית</div>
-                      {savedRules.sort((a, b) => a[0].localeCompare(b[0])).map(([business, category]) => (
-                        <div key={business} className="flex items-center gap-3 px-3 py-2.5 bg-slate-50 rounded-xl">
-                          <div className="flex-1 min-w-0">
-                            <span className="text-sm font-medium text-slate-800 truncate block">{business}</span>
+                      {filteredSavedRules.map(([business, category]) => {
+                        const meta = categoryRulesMeta?.[business];
+                        const dateStr = meta?.date ? new Date(meta.date).toLocaleDateString('he-IL', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+                        
+                        return (
+                          <div key={business} className="flex items-center gap-3 px-3 py-2.5 bg-slate-50 rounded-xl">
+                            <div className="flex-1 min-w-0">
+                              <span className="text-sm font-medium text-slate-800 truncate block">{business}</span>
+                              {dateStr && <span className="text-[10px] text-slate-400 block mt-0.5">נשמר ב-{dateStr}</span>}
+                            </div>
+                            <div
+                              className="text-xs px-2 py-1 rounded-full font-medium shrink-0"
+                              style={{ backgroundColor: (catColors[category] ?? '#9ca3af') + '25', color: catColors[category] ?? '#9ca3af' }}
+                            >
+                              {category}
+                            </div>
+                            <button
+                              onClick={() => deleteCategoryRule(business)}
+                              title="מחק כלל — העסק יחזור לרשימת הממתינים"
+                              className="text-slate-300 hover:text-red-400 shrink-0"
+                            >
+                              <Trash2 size={13} />
+                            </button>
                           </div>
-                          <div
-                            className="text-xs px-2 py-1 rounded-full font-medium shrink-0"
-                            style={{ backgroundColor: (catColors[category] ?? '#9ca3af') + '25', color: catColors[category] ?? '#9ca3af' }}
-                          >
-                            {category}
-                          </div>
-                          <button
-                            onClick={() => deleteCategoryRule(business)}
-                            title="מחק כלל — העסק יחזור לרשימת הממתינים"
-                            className="text-slate-300 hover:text-red-400 shrink-0"
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </>
                   )}
 
                   {/* Manual businesses */}
-                  {manualRules.length > 0 && (
+                  {filteredManualRules.length > 0 && (
                     <>
                       <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide px-1 py-1 mt-2">ידני — בחירה בכל פעם מחדש</div>
-                      {manualRules.sort((a, b) => a[0].localeCompare(b[0])).map(([business]) => (
-                        <div key={business} className="flex items-center gap-3 px-3 py-2.5 bg-slate-50 rounded-xl">
-                          <div className="flex-1 min-w-0">
-                            <span className="text-sm font-medium text-slate-800 truncate block">{business}</span>
+                      {filteredManualRules.map(([business]) => {
+                        const meta = categoryRulesMeta?.[business];
+                        const dateStr = meta?.date ? new Date(meta.date).toLocaleDateString('he-IL', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+
+                        return (
+                          <div key={business} className="flex items-center gap-3 px-3 py-2.5 bg-slate-50 rounded-xl">
+                            <div className="flex-1 min-w-0">
+                              <span className="text-sm font-medium text-slate-800 truncate block">{business}</span>
+                              {dateStr && <span className="text-[10px] text-slate-400 block mt-0.5">נשמר ב-{dateStr}</span>}
+                            </div>
+                            <span className="text-xs px-2 py-1 rounded-full font-medium bg-slate-200 text-slate-500 shrink-0">
+                              ידני
+                            </span>
+                            <button
+                              onClick={() => deleteCategoryRule(business)}
+                              title="הסר — העסק יחזור לרשימת הממתינים"
+                              className="text-slate-300 hover:text-red-400 shrink-0"
+                            >
+                              <Trash2 size={13} />
+                            </button>
                           </div>
-                          <span className="text-xs px-2 py-1 rounded-full font-medium bg-slate-200 text-slate-500 shrink-0">
-                            ידני
-                          </span>
-                          <button
-                            onClick={() => deleteCategoryRule(business)}
-                            title="הסר — העסק יחזור לרשימת הממתינים"
-                            className="text-slate-300 hover:text-red-400 shrink-0"
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </>
                   )}
                 </div>
@@ -1023,6 +1460,50 @@ export default function Expenses() {
         )}
       </Modal>
 
+      {/* Add Txn Type Modal */}
+      <Modal open={addTxnTypeModal} onClose={() => setAddTxnTypeModal(false)} title="איך תרצה להוסיף תנועות?">
+        <div className="flex flex-col gap-3 p-2" dir="rtl">
+          <button
+            onClick={() => { setAddTxnTypeModal(false); navigate('/settings?tab=banks'); }}
+            className="flex items-center gap-3 p-4 bg-white border border-slate-200 rounded-xl hover:bg-blue-50 hover:border-blue-200 transition-colors text-right"
+          >
+            <div className="bg-indigo-100 p-3 rounded-full text-indigo-600">
+              <Landmark size={24} />
+            </div>
+            <div>
+              <div className="font-bold text-slate-800">סנכרון אוטומטי מהבנק</div>
+              <div className="text-xs text-slate-500 mt-0.5">סנכרן את כרטיסי האשראי וחשבונות הבנק שלך אוטומטית</div>
+            </div>
+          </button>
+
+          <button
+            onClick={() => { setAddTxnTypeModal(false); setAddModal(true); }}
+            className="flex items-center gap-3 p-4 bg-white border border-slate-200 rounded-xl hover:bg-blue-50 hover:border-blue-200 transition-colors text-right"
+          >
+            <div className="bg-blue-100 p-3 rounded-full text-blue-600">
+              <Plus size={24} />
+            </div>
+            <div>
+              <div className="font-bold text-slate-800">הזנה ידנית</div>
+              <div className="text-xs text-slate-500 mt-0.5">הוסף עסקאות אחת אחת באופן ידני</div>
+            </div>
+          </button>
+          
+          <button
+            onClick={() => { setAddTxnTypeModal(false); setImportModal(true); }}
+            className="flex items-center gap-3 p-4 bg-white border border-slate-200 rounded-xl hover:bg-blue-50 hover:border-blue-200 transition-colors text-right"
+          >
+            <div className="bg-emerald-100 p-3 rounded-full text-emerald-600">
+              <Upload size={24} />
+            </div>
+            <div>
+              <div className="font-bold text-slate-800">ייבוא מאקסל / CSV</div>
+              <div className="text-xs text-slate-500 mt-0.5">העלה קובץ עם הרבה עסקאות בבת אחת</div>
+            </div>
+          </button>
+        </div>
+      </Modal>
+
       {/* Add Manual Modal */}
       <Modal open={addModal} onClose={() => setAddModal(false)} title="הוסף הוצאה">
         <div className="space-y-4">
@@ -1054,6 +1535,157 @@ export default function Expenses() {
             הוסף הוצאה
           </button>
         </div>
+      </Modal>
+
+      {/* Transaction Details Modal */}
+      {/* Transaction Details Modal */}
+      <Modal open={!!txnDetailsModal} onClose={() => { setTxnDetailsModal(null); setIsEditingCategory(false); }} title="פרטי עסקה">
+        {txnDetailsModal && (
+          <div className="space-y-4 text-sm" dir="rtl">
+            <div className="grid grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-100">
+              <div>
+                <div className="text-slate-500 text-[11px] font-medium mb-1">שם עסק</div>
+                <div className="font-semibold text-slate-900">{txnDetailsModal.business}</div>
+              </div>
+              <div>
+                <div className="text-slate-500 text-[11px] font-medium mb-1">סכום</div>
+                <div className="font-semibold text-slate-900" dir="ltr">{fmtCurrency(txnDetailsModal.amount)} {txnDetailsModal.currency !== 'ILS' ? `(${txnDetailsModal.currency})` : ''}</div>
+              </div>
+              <div>
+                <div className="text-slate-500 text-[11px] font-medium mb-1">תאריך</div>
+                <div className="font-medium text-slate-800">{fmtDate(txnDetailsModal.date)}</div>
+              </div>
+              <div>
+                <div className="text-slate-500 text-[11px] font-medium mb-1">קטגוריה</div>
+                {isEditingCategory ? (
+                  <select
+                    value={editCategoryVal}
+                    onChange={(e) => setEditCategoryVal(e.target.value as Category)}
+                    className="w-full border border-slate-200 rounded-lg px-2 py-1 bg-white text-sm font-medium"
+                  >
+                    {categoryList.map((c) => (
+                      <option key={c} value={c}>{c}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="font-medium text-slate-800">{txnDetailsModal.category}</div>
+                )}
+              </div>
+              <div>
+                <div className="text-slate-500 text-[11px] font-medium mb-1">מקור השורה</div>
+                <div className="font-medium text-slate-800">{txnDetailsModal.source}</div>
+              </div>
+              {txnDetailsModal.recurringId && (
+                <div>
+                  <div className="text-slate-500 text-[11px] font-medium mb-1">מקושר לחיוב קבוע</div>
+                  <div className="font-medium text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded inline-block text-xs">
+                    {recurring.find(r => r.id === txnDetailsModal.recurringId)?.name || 'כן'}
+                  </div>
+                </div>
+              )}
+              {txnDetailsModal.aiConfidence !== undefined && (
+                <div>
+                  <div className="text-slate-500 text-[11px] font-medium mb-1">רמת ביטחון סיווג AI</div>
+                  <div className="font-semibold text-slate-800">{txnDetailsModal.aiConfidence}%</div>
+                </div>
+              )}
+            </div>
+            
+            {txnDetailsModal.notes && (
+              <div>
+                <div className="text-slate-500 text-[11px] font-medium mb-1">הערות</div>
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 text-slate-700 whitespace-pre-wrap">
+                  {txnDetailsModal.notes}
+                </div>
+              </div>
+            )}
+            
+            {txnDetailsModal.metadata && Object.keys(txnDetailsModal.metadata).length > 0 && (
+              <div>
+                <div className="text-slate-500 text-[11px] font-medium mb-1">מידע נוסף (מטא-דאטה)</div>
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-100 text-xs text-slate-600 font-mono text-left overflow-x-auto" dir="ltr">
+                  <pre>{JSON.stringify(txnDetailsModal.metadata, null, 2)}</pre>
+                </div>
+              </div>
+            )}
+            
+            <div className="pt-2 flex gap-2">
+              {isEditingCategory ? (
+                <>
+                  <button 
+                    onClick={() => {
+                      if (txnDetailsModal) {
+                        if (txnDetailsModal.isVirtual && txnDetailsModal.recurringId) {
+                          updateRecurring(txnDetailsModal.recurringId, { category: editCategoryVal });
+                        } else {
+                          overrideCategory(txnDetailsModal.id, editCategoryVal);
+                        }
+                        setTxnDetailsModal({ ...txnDetailsModal, category: editCategoryVal });
+                        setIsEditingCategory(false);
+                      }
+                    }} 
+                    className="flex-1 bg-green-600 text-white rounded-xl py-2.5 text-sm hover:bg-green-700 font-medium"
+                  >
+                    שמור
+                  </button>
+                  <button 
+                    onClick={() => setIsEditingCategory(false)} 
+                    className="flex-1 bg-white border border-slate-200 text-slate-700 rounded-xl py-2.5 text-sm hover:bg-slate-50 font-medium"
+                  >
+                    ביטול
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button 
+                    onClick={() => {
+                      setIsEditingCategory(true);
+                      setEditCategoryVal(txnDetailsModal.category);
+                    }} 
+                    className="flex-1 bg-white border border-slate-200 text-slate-700 rounded-xl py-2.5 text-sm hover:bg-slate-50 font-medium"
+                  >
+                    ערוך
+                  </button>
+                  <button 
+                    onClick={() => analyzeSingleTransaction(txnDetailsModal)} 
+                    disabled={isSingleAILoading}
+                    className="flex-1 bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200 text-blue-700 rounded-xl py-2.5 text-sm hover:from-blue-100 hover:to-indigo-100 font-medium flex justify-center items-center gap-1 disabled:opacity-50"
+                  >
+                    {isSingleAILoading ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                    בדיקת AI
+                  </button>
+                  {!txnDetailsModal.isVirtual && (
+                    <button 
+                      onClick={() => { deleteTransaction(txnDetailsModal.id); setTxnDetailsModal(null); }} 
+                      className="flex-1 bg-red-50 border border-red-100 text-red-600 rounded-xl py-2.5 text-sm hover:bg-red-100 font-medium"
+                    >
+                      מחק עסקה
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+          </div>
+        )}
+      </Modal>
+      {/* AI Debug Log Modal */}
+      <Modal open={!!aiDebugLog} onClose={() => setAiDebugLog(null)} title="לוג ניתוח AI">
+        {aiDebugLog && (
+          <div className="space-y-4">
+            <div className="bg-slate-800 text-slate-300 p-4 rounded-xl font-mono text-xs overflow-x-auto" dir="ltr">
+              <div className="text-slate-400 mb-2">Prompt:</div>
+              <pre className="whitespace-pre-wrap">{aiDebugLog.prompt}</pre>
+              <div className="text-slate-400 mt-6 mb-2">Response:</div>
+              <pre className="whitespace-pre-wrap">{aiDebugLog.response}</pre>
+            </div>
+            <button 
+              onClick={() => setAiDebugLog(null)} 
+              className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold py-2 rounded-lg transition-colors"
+            >
+              סגור
+            </button>
+          </div>
+        )}
       </Modal>
     </div>
   );

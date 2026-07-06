@@ -3,11 +3,14 @@ import { Outlet, useLocation } from 'react-router-dom';
 import { Menu, Star } from 'lucide-react';
 import Sidebar from './Sidebar';
 import { useTelegramPolling } from '../../hooks/useTelegramPolling';
+import { useExchangeRateSync } from '../../hooks/useExchangeRateSync';
+import SyncProgress from '../common/SyncProgress';
 
 export default function Layout() {
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   useTelegramPolling();
+  useExchangeRateSync();
 
   // Close sidebar on route change (mobile)
   useEffect(() => {
@@ -16,6 +19,7 @@ export default function Layout() {
 
   return (
     <div className="flex min-h-screen bg-app flex-col lg:flex-row" dir="rtl">
+      <SyncProgress />
       <Sidebar open={sidebarOpen} setOpen={setSidebarOpen} />
       
       <div className="flex-1 flex flex-col min-w-0 lg:mr-64">

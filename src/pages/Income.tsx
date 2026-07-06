@@ -1,6 +1,6 @@
-import { useState } from 'react';
-import { Plus, X, Pencil } from 'lucide-react';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { useState, useMemo } from 'react';
+import { Plus, X, Pencil, TrendingUp } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 import { useStore } from '../store';
 import Card from '../components/common/Card';
 import Modal from '../components/common/Modal';
@@ -35,12 +35,14 @@ export default function Income() {
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
     const label = d.toLocaleDateString('he-IL', { month: 'short' });
     const total = income.filter((e) => e.date.startsWith(key)).reduce((a, e) => a + e.netAmount, 0);
-    return { month: label, הכנסה: total };
+    return { month: label, הכנסה: total, key };
   }).reverse();
 
-  const thisMonth = new Date().toISOString().slice(0, 7);
-  const monthIncome = income.filter((e) => e.date.startsWith(thisMonth)).reduce((a, e) => a + e.netAmount, 0);
-  const monthGross = income.filter((e) => e.date.startsWith(thisMonth)).reduce((a, e) => a + (e.grossAmount ?? e.netAmount), 0);
+  const [monthFilter, setMonthFilter] = useState<string | null>(null);
+
+  const activeMonthKey = monthFilter || new Date().toISOString().slice(0, 7);
+  const monthIncome = income.filter((e) => e.date.startsWith(activeMonthKey)).reduce((a, e) => a + e.netAmount, 0);
+  const monthGross = income.filter((e) => e.date.startsWith(activeMonthKey)).reduce((a, e) => a + (e.grossAmount ?? e.netAmount), 0);
 
   function addEntry() {
     addIncome({ date: form.date, source: form.source, type: form.type, grossAmount: form.grossAmount ? +form.grossAmount : undefined, netAmount: +form.netAmount, recurring: form.recurring });
@@ -80,28 +82,80 @@ export default function Income() {
       </div>
 
       <Card>
-        <h2 className="font-semibold text-slate-900 mb-4">הכנסות 6 חודשים אחרונים</h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="font-semibold text-slate-900">הכנסות 6 חודשים אחרונים</h2>
+          {monthFilter && (
+            <button
+              onClick={() => setMonthFilter(null)}
+              className="text-xs font-semibold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-lg hover:bg-blue-100 transition-colors"
+            >
+              הצג הכל / בטל בחירה
+            </button>
+          )}
+        </div>
         <ResponsiveContainer width="100%" height={200}>
           <BarChart data={months}>
             <XAxis dataKey="month" tick={{ fontSize: 12 }} />
             <YAxis tickFormatter={(v) => `₪${(v / 1000).toFixed(0)}k`} tick={{ fontSize: 12 }} />
             <Tooltip formatter={(v: unknown) => fmtCurrency(v as number)} />
-            <Bar dataKey="הכנסה" fill="#22c55e" radius={[4, 4, 0, 0]} />
+            <Bar
+              dataKey="הכנסה"
+              radius={[4, 4, 0, 0]}
+              onClick={(data) => {
+                if (data && data.key) {
+                  setMonthFilter(monthFilter === data.key ? null : data.key);
+                }
+              }}
+            >
+              {months.map((entry, index) => (
+                <Cell
+                  key={`cell-${index}`}
+                  cursor="pointer"
+                  fill={monthFilter === entry.key ? '#16a34a' : '#22c55e'}
+                />
+              ))}
+            </Bar>
           </BarChart>
         </ResponsiveContainer>
       </Card>
 
-      <Card className="p-0 overflow-x-auto">
-        <table className="w-full text-sm min-w-[500px]">
-          <thead>
-            <tr className="bg-slate-50 border-b border-slate-100">
-              {['תאריך', 'מקור', 'סוג', 'ברוטו', 'נטו', ''].map((h) => (
-                <th key={h} className="text-right px-4 py-3 text-slate-500 font-medium">{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {[...income].sort((a, b) => b.date.localeCompare(a.date)).map((e) => (
+      <div className="flex items-center justify-between pb-1 pt-2">
+        <h2 className="font-semibold text-slate-800 text-lg">
+          {monthFilter ? (
+            <>
+              פירוט הכנסות ל-
+              {(() => {
+                const [yr, mn] = monthFilter.split('-');
+                const dateObj = new Date(+yr, +mn - 1, 1);
+                return dateObj.toLocaleDateString('he-IL', { month: 'long', year: 'numeric' });
+              })()}
+            </>
+          ) : (
+            'פירוט הכנסות'
+          )}
+        </h2>
+      </div>
+
+      {!monthFilter ? (
+        <div className="flex flex-col items-center gap-2 py-10 text-slate-400 bg-white rounded-2xl border border-slate-100 shadow-sm">
+          <TrendingUp size={32} className="text-slate-300 animate-pulse" />
+          <p className="text-sm font-medium text-slate-600">לחץ על עמודה בגרף למעלה כדי להציג את פירוט ההכנסות</p>
+        </div>
+      ) : (
+        <Card className="p-0 overflow-x-auto">
+          <table className="w-full text-sm min-w-[500px]">
+            <thead>
+              <tr className="bg-slate-50 border-b border-slate-100">
+                {['תאריך', 'מקור', 'סוג', 'ברוטו', 'נטו', ''].map((h) => (
+                  <th key={h} className="text-right px-4 py-3 text-slate-500 font-medium">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {[...income]
+                .filter((e) => e.date.startsWith(monthFilter))
+                .sort((a, b) => b.date.localeCompare(a.date))
+                .map((e) => (
               <tr key={e.id} className="border-b border-slate-50 hover:bg-slate-50">
                 <td className="px-4 py-3 text-slate-600">{fmtDate(e.date)}</td>
                 <td className="px-4 py-3 font-medium text-slate-900">{e.source}</td>
@@ -119,6 +173,7 @@ export default function Income() {
           </tbody>
         </table>
       </Card>
+      )}
 
       {/* Edit modal */}
       <Modal open={!!editItem} onClose={() => setEditItem(null)} title={`ערוך — ${editItem?.source ?? ''}`}>

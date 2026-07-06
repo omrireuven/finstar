@@ -179,7 +179,7 @@ export default function Goals() {
   const [catModal, setCatModal] = useState(false);
 
   const [year, m] = month.split('-').map(Number);
-  const monthTxns = transactions.filter((t) => t.date.startsWith(month));
+  const monthTxns = transactions.filter((t) => !t.pending && t.date.startsWith(month));
 
   const spentByCategory: Record<string, number> = {};
   for (const t of monthTxns) {
@@ -207,7 +207,7 @@ export default function Goals() {
       return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
     });
     const bycat: Record<string, number[]> = {};
-    for (const t of transactions.filter((t) => months3.some((mk) => t.date.startsWith(mk)))) {
+    for (const t of transactions.filter((t) => !t.pending && months3.some((mk) => t.date.startsWith(mk)))) {
       if (!bycat[t.category]) bycat[t.category] = [];
       bycat[t.category].push(t.amount);
     }

@@ -19,16 +19,16 @@ export default function Gemel() {
   const { gemel, addGemel, updateGemel, deleteGemel } = useStore();
   const [modal, setModal] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
-  const [form, setForm] = useState({ name: '', company: COMPANIES[0], balance: '', track: TRACKS[0], managementFee: '', annualReturn: '', totalReturn: '' });
+  const [form, setForm] = useState({ name: '', company: COMPANIES[0], balance: '', track: TRACKS[0], managementFee: '', annualReturn: '', depositFee: '', employeeContribution: '', employerContribution: '', salary: '' });
 
   function openEdit(g: typeof gemel[0]) {
     setEditId(g.id);
-    setForm({ name: g.name, company: g.company, balance: String(g.balance), track: g.track, managementFee: String(g.managementFee), annualReturn: String(g.annualReturn), totalReturn: String(g.totalReturn) });
+    setForm({ name: g.name, company: g.company, balance: String(g.balance), track: g.track, managementFee: String(g.managementFee), annualReturn: String(g.annualReturn), depositFee: String(g.depositFee || 0), employeeContribution: String(g.employeeContribution || 0), employerContribution: String(g.employerContribution || 0), salary: String(g.salary || 0) });
   }
 
   function saveEdit() {
     if (!editId) return;
-    updateGemel(editId, { name: form.name, company: form.company, balance: +form.balance, track: form.track, managementFee: +form.managementFee, annualReturn: +form.annualReturn, totalReturn: +form.totalReturn });
+    updateGemel(editId, { name: form.name, company: form.company, balance: +form.balance, track: form.track, managementFee: +form.managementFee, annualReturn: +form.annualReturn, depositFee: +form.depositFee, employeeContribution: +form.employeeContribution, employerContribution: +form.employerContribution, salary: +form.salary });
     setEditId(null);
   }
 
@@ -40,7 +40,7 @@ export default function Gemel() {
   const chartData = months.map((m, i) => ({ month: m, יתרה: Math.round(totalBalance * (0.88 + i * 0.02)) }));
 
   function addFund() {
-    addGemel({ name: form.name, company: form.company, balance: +form.balance, track: form.track, managementFee: +form.managementFee, annualReturn: +form.annualReturn, totalReturn: +form.totalReturn });
+    addGemel({ name: form.name, company: form.company, balance: +form.balance, track: form.track, managementFee: +form.managementFee, annualReturn: +form.annualReturn, depositFee: +form.depositFee, employeeContribution: +form.employeeContribution, employerContribution: +form.employerContribution, salary: +form.salary });
     setModal(false);
   }
 
@@ -107,7 +107,7 @@ export default function Gemel() {
             <div className="grid grid-cols-4 gap-4 mt-4 pt-4 border-t border-slate-100 text-sm">
               <div><div className="text-slate-400">דמי ניהול</div><div className="font-medium">{fmt(g.managementFee, 2)}%</div></div>
               <div><div className="text-slate-400">תשואה שנתית</div><div className={`font-medium ${g.annualReturn >= 0 ? 'text-green-600' : 'text-red-500'}`}>{g.annualReturn >= 0 ? '+' : ''}{fmt(g.annualReturn, 1)}%</div></div>
-              <div><div className="text-slate-400">תשואה מצטברת</div><div className={`font-medium ${g.totalReturn >= 0 ? 'text-green-600' : 'text-red-500'}`}>{g.totalReturn >= 0 ? '+' : ''}{fmt(g.totalReturn, 1)}%</div></div>
+              <div><div className="text-slate-400">תשואה מצטברת</div><div className={`font-medium ${g.annualReturn >= 0 ? 'text-green-600' : 'text-red-500'}`}>{g.annualReturn >= 0 ? '+' : ''}{fmt(g.annualReturn, 1)}%</div></div>
               <div className="flex gap-2 items-end">
                 <button onClick={() => openEdit(g)} className="text-xs px-3 py-1.5 border border-slate-200 rounded-lg hover:bg-slate-50 flex items-center gap-1">
                   <Pencil size={11} /> ערוך
@@ -127,7 +127,6 @@ export default function Gemel() {
             { key: 'balance', label: 'יתרה נוכחית (₪)', type: 'number' },
             { key: 'managementFee', label: 'דמי ניהול (%)', type: 'number' },
             { key: 'annualReturn', label: 'תשואה שנתית (%)', type: 'number' },
-            { key: 'totalReturn', label: 'תשואה מצטברת (%)', type: 'number' },
           ] as { key: string; label: string; type?: string }[]).map(({ key, label, type = 'text' }) => (
             <div key={key}>
               <label className="block text-sm font-medium text-slate-700 mb-1">{label}</label>
@@ -159,7 +158,6 @@ export default function Gemel() {
             { key: 'balance', label: 'יתרה נוכחית (₪)', type: 'number' },
             { key: 'managementFee', label: 'דמי ניהול (%)', type: 'number' },
             { key: 'annualReturn', label: 'תשואה שנתית (%)', type: 'number' },
-            { key: 'totalReturn', label: 'תשואה מצטברת (%)', type: 'number' },
           ].map(({ key, label, type = 'text' }) => (
             <div key={key}>
               <label className="block text-sm font-medium text-slate-700 mb-1">{label}</label>

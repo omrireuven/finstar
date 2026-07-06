@@ -31,7 +31,7 @@ export default function Trends() {
 
   function liveMetrics(month: number) {
     const key = `${year}-${String(month).padStart(2, '0')}`;
-    const txns = transactions.filter((t) => t.date.startsWith(key));
+    const txns = transactions.filter((t) => !t.pending && t.date.startsWith(key));
     const inc = income.filter((e) => e.date.startsWith(key));
     const totalExpenses = txns.reduce((a, t) => a + t.amount, 0);
     const totalIncome = inc.reduce((a, e) => a + e.netAmount, 0);
@@ -55,7 +55,7 @@ export default function Trends() {
   const monthlyData = MONTHS_SHORT.map((label, i) => {
     const month = i + 1;
     const key = `${year}-${String(month).padStart(2, '0')}`;
-    const expenses = transactions.filter((t) => t.date.startsWith(key)).reduce((a, t) => a + t.amount, 0);
+    const expenses = transactions.filter((t) => !t.pending && t.date.startsWith(key)).reduce((a, t) => a + t.amount, 0);
     const monthIncome = income.filter((e) => e.date.startsWith(key)).reduce((a, e) => a + e.netAmount, 0);
     return { month: label, הוצאות: expenses, הכנסות: monthIncome, יעד: totalBudget };
   });
@@ -63,7 +63,7 @@ export default function Trends() {
   const catData = MONTHS_SHORT.map((label, i) => {
     const month = i + 1;
     const key = `${year}-${String(month).padStart(2, '0')}`;
-    const txns = transactions.filter((t) => t.date.startsWith(key));
+    const txns = transactions.filter((t) => !t.pending && t.date.startsWith(key));
     const entry: Record<string, number | string> = { month: label };
     for (const cat of categoryList) {
       entry[cat] = txns.filter((t) => t.category === cat).reduce((a, t) => a + t.amount, 0);
@@ -71,7 +71,7 @@ export default function Trends() {
     return entry;
   });
 
-  const totalExpenses = transactions.filter((t) => t.date.startsWith(String(year))).reduce((a, t) => a + t.amount, 0);
+  const totalExpenses = transactions.filter((t) => !t.pending && t.date.startsWith(String(year))).reduce((a, t) => a + t.amount, 0);
   const totalIncome = income.filter((e) => e.date.startsWith(String(year))).reduce((a, e) => a + e.netAmount, 0);
   const annualNet = totalIncome - totalExpenses;
   const peakMonth = monthlyData.reduce((max, m) => m.הוצאות > max.הוצאות ? m : max, monthlyData[0]);
@@ -141,7 +141,7 @@ export default function Trends() {
             const month = i + 1;
             const entry = getEntry(month);
             const key = `${year}-${String(month).padStart(2, '0')}`;
-            const spent = transactions.filter((t) => t.date.startsWith(key)).reduce((a, t) => a + t.amount, 0);
+            const spent = transactions.filter((t) => !t.pending && t.date.startsWith(key)).reduce((a, t) => a + t.amount, 0);
             const isSelected = selectedMonth === month;
             const score = entry?.score ?? null;
             const hasData = spent > 0 || !!entry;

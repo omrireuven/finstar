@@ -7,7 +7,8 @@ import { useHistoryCache, getCached } from '../store/historyCache';
 import { fetchHistory } from '../lib/yahooFinance';
 import Card from '../components/common/Card';
 import { fmtCurrency, currentMonthKey, fmtMonthYear, fmtDate, fmt } from '../utils/format';
-import { AlertCircle, Calendar, ArrowLeft, X } from 'lucide-react';
+import { AlertCircle, Calendar, ArrowLeft, X, Loader2, RefreshCw } from 'lucide-react';
+import { useManualSync } from '../hooks/useManualSync';
 
 function KPICard({ label, value, sub, color, accent, onClick }: {
   label: string; value: string; sub?: string; color: string; accent?: string; onClick?: () => void;
@@ -27,11 +28,61 @@ function KPICard({ label, value, sub, color, accent, onClick }: {
   );
 }
 
+function formatTimeAgo(isoString?: string): string {
+  if (!isoString) return 'לא סונכרן';
+  const diffMs = new Date().getTime() - new Date(isoString).getTime();
+  const diffMins = Math.floor(diffMs / 60_000);
+  if (diffMins < 1) return 'עכשיו';
+  if (diffMins < 60) return `לפני ${diffMins} דק׳`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `לפני ${diffHours} שעות`;
+  const diffDays = Math.floor(diffHours / 24);
+  return `לפני ${diffDays} ימים`;
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
   const [openCat, setOpenCat] = useState<string | null>(null);
   const { transactions, savings, hishtalmut, gemel, pension, income, recurring, lots, prices, usdIls } = useStore();
-  const { corsProxy } = useSettings();
+  const { corsProxy, bankAccounts } = useSettings();
+  const { syncAll, isSyncing } = useManualSync();
+  const [showPopover, setShowPopover] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  const latestSyncDate = useMemo(() => {
+    const dates = bankAccounts
+      .map(a => a.lastSync)
+      .filter(Boolean) as string[];
+    if (dates.length === 0) return undefined;
+    return dates.reduce((latest, current) => current > latest ? current : latest, dates[0]);
+  }, [bankAccounts]);
+
+  const handleTogglePopover = () => {
+    if (!showPopover) {
+      setSelectedIds(bankAccounts.map(a => a.id));
+    }
+    setShowPopover(!showPopover);
+  };
+
+  const handleToggleAccount = (id: string) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  };
+
+  const handleToggleAll = () => {
+    if (selectedIds.length === bankAccounts.length) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(bankAccounts.map(a => a.id));
+    }
+  };
+
+  const handleStartSync = async () => {
+    setShowPopover(false);
+    await syncAll(selectedIds);
+  };
+
   const colorMap = useCategoryColorMap();
   const { totalValue: portfolioValue, rows: portfolioRows, totalNativeUSD, totalNativeILS } = usePortfolioSummary();
 
@@ -100,7 +151,7 @@ export default function Dashboard() {
 
   const now = new Date();
   const month = currentMonthKey();
-  const monthTxns = transactions.filter((t) => t.date.startsWith(month));
+  const monthTxns = transactions.filter((t) => t.date.startsWith(month) && !t.pending);
   const monthExpenses = monthTxns.reduce((a, t) => a + t.amount, 0);
   const monthIncome = income
     .filter((i) => i.date.startsWith(month))
@@ -189,9 +240,80 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-900">{getGreeting()}, עומרי ראובן 👋</h1>
-        <p className="text-slate-500 text-sm">סקירה פיננסית כוללת לחודש {fmtMonthYear(now.getFullYear(), now.getMonth() + 1)}</p>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">{getGreeting()}, עומרי ראובן 👋</h1>
+          <p className="text-slate-500 text-sm">סקירה פיננסית כוללת לחודש {fmtMonthYear(now.getFullYear(), now.getMonth() + 1)}</p>
+        </div>
+        {bankAccounts.length > 0 && (
+          <div className="relative w-full sm:w-auto">
+            {/* Popover Selection Box */}
+            {showPopover && (
+              <>
+                <div 
+                  className="fixed inset-0 z-40 cursor-default" 
+                  onClick={() => setShowPopover(false)} 
+                />
+                <div 
+                  className="absolute top-full left-0 mt-2 bg-white border border-slate-200 rounded-xl shadow-2xl p-3 z-50 text-slate-800 flex flex-col gap-2 animate-scale-in w-56 sm:left-auto sm:right-0"
+                  onClick={e => e.stopPropagation()}
+                  dir="rtl"
+                >
+                  <div className="text-[11px] font-bold text-slate-500 border-b border-slate-100 pb-1.5 flex justify-between items-center">
+                    <span>בחר חשבונות לסנכרון</span>
+                    <button 
+                      onClick={handleToggleAll}
+                      className="text-[10px] text-blue-600 hover:text-blue-500 font-semibold"
+                    >
+                      {selectedIds.length === bankAccounts.length ? 'הסר הכל' : 'בחר הכל'}
+                    </button>
+                  </div>
+                  
+                  <div className="max-h-32 overflow-y-auto space-y-1.5 py-1">
+                    {bankAccounts.map(acc => (
+                      <label key={acc.id} className="flex items-center gap-2 px-1 py-0.5 hover:bg-slate-50 rounded-md cursor-pointer text-xs">
+                        <input 
+                          type="checkbox"
+                          checked={selectedIds.includes(acc.id)}
+                          onChange={() => handleToggleAccount(acc.id)}
+                          className="w-3.5 h-3.5 text-blue-600 border-slate-300 rounded focus:ring-blue-500"
+                        />
+                        <span className="font-medium text-slate-700">{acc.nickname}</span>
+                      </label>
+                    ))}
+                  </div>
+                  
+                  <button
+                    onClick={handleStartSync}
+                    disabled={selectedIds.length === 0 || isSyncing}
+                    className="w-full py-1.5 bg-blue-600 text-white rounded-lg text-xs font-bold hover:bg-blue-700 disabled:opacity-40 transition-colors flex items-center justify-center gap-1.5 shadow-sm"
+                  >
+                    <RefreshCw size={11} className={isSyncing ? 'animate-spin' : ''} />
+                    <span>סנכרן {selectedIds.length} חשבונות</span>
+                  </button>
+                </div>
+              </>
+            )}
+
+            <button
+              onClick={handleTogglePopover}
+              disabled={isSyncing}
+              className="relative flex items-center justify-between w-full sm:w-auto min-w-[130px] px-2.5 py-1.5 rounded-lg text-[11px] font-bold text-blue-600 bg-blue-500/[0.04] border border-blue-500/15 hover:bg-blue-500/[0.08] hover:border-blue-500/30 transition-colors disabled:opacity-50 gap-2"
+            >
+              <div className="flex items-center gap-1">
+                {isSyncing ? (
+                  <Loader2 size={11} className="animate-spin text-blue-500" />
+                ) : (
+                  <RefreshCw size={11} className="text-blue-500" />
+                )}
+                <span>סנכרן</span>
+              </div>
+              <span className="text-[9px] font-normal text-blue-500/60" dir="rtl">
+                {formatTimeAgo(latestSyncDate)}
+              </span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Alerts */}

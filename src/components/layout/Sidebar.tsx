@@ -1,10 +1,14 @@
+import { useState, useMemo } from 'react';
 import { NavLink } from 'react-router-dom';
 import {
   LayoutDashboard, TrendingUp, PiggyBank,
   Wallet, CreditCard, Target, BarChart3, Calculator,
-  Bell, Star, DollarSign, Settings, X, ExternalLink
+  Bell, Star, DollarSign, Settings, X, ExternalLink,
+  Loader2, RefreshCw
 } from 'lucide-react';
 import clsx from 'clsx';
+import { useManualSync } from '../../hooks/useManualSync';
+import { useSettings } from '../../store/settingsStore';
 
 type NavItem = { to: string; label: string; icon: React.ElementType };
 
@@ -41,7 +45,58 @@ const navGroups: { label: string; items: NavItem[] }[] = [
   },
 ];
 
+function formatTimeAgo(isoString?: string): string {
+  if (!isoString) return 'לא סונכרן';
+  const diffMs = new Date().getTime() - new Date(isoString).getTime();
+  const diffMins = Math.floor(diffMs / 60_000);
+  if (diffMins < 1) return 'עכשיו';
+  if (diffMins < 60) return `לפני ${diffMins} דק׳`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `לפני ${diffHours} שעות`;
+  const diffDays = Math.floor(diffHours / 24);
+  return `לפני ${diffDays} ימים`;
+}
+
 export default function Sidebar({ open, setOpen }: { open: boolean, setOpen: (val: boolean) => void }) {
+  const { syncAll, isSyncing } = useManualSync();
+  const { bankAccounts } = useSettings();
+  const [showPopover, setShowPopover] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+
+  const latestSyncDate = useMemo(() => {
+    const dates = bankAccounts
+      .map(a => a.lastSync)
+      .filter(Boolean) as string[];
+    if (dates.length === 0) return undefined;
+    return dates.reduce((latest, current) => current > latest ? current : latest, dates[0]);
+  }, [bankAccounts]);
+
+  const handleTogglePopover = () => {
+    if (!showPopover) {
+      setSelectedIds(bankAccounts.map(a => a.id));
+    }
+    setShowPopover(!showPopover);
+  };
+
+  const handleToggleAccount = (id: string) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  };
+
+  const handleToggleAll = () => {
+    if (selectedIds.length === bankAccounts.length) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(bankAccounts.map(a => a.id));
+    }
+  };
+
+  const handleStartSync = async () => {
+    setShowPopover(false);
+    await syncAll(selectedIds);
+  };
+
   return (
     <>
       {/* Mobile overlay */}
@@ -146,6 +201,76 @@ export default function Sidebar({ open, setOpen }: { open: boolean, setOpen: (va
             </div>
           ))}
         </nav>
+
+        {bankAccounts.length > 0 && (
+          <div className="px-3 mb-3 relative">
+            {/* Popover Selection Box */}
+            {showPopover && (
+              <>
+                <div 
+                  className="fixed inset-0 z-40 cursor-default" 
+                  onClick={() => setShowPopover(false)} 
+                />
+                <div 
+                  className="absolute bottom-full right-0 left-0 mb-2 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl p-3 z-50 text-slate-100 flex flex-col gap-2 animate-scale-in"
+                  onClick={e => e.stopPropagation()}
+                  dir="rtl"
+                >
+                  <div className="text-[11px] font-bold text-slate-400 border-b border-slate-800 pb-1.5 flex justify-between items-center">
+                    <span>בחר חשבונות לסנכרון</span>
+                    <button 
+                      onClick={handleToggleAll}
+                      className="text-[10px] text-blue-400 hover:text-blue-300 font-semibold"
+                    >
+                      {selectedIds.length === bankAccounts.length ? 'הסר הכל' : 'בחר הכל'}
+                    </button>
+                  </div>
+                  
+                  <div className="max-h-32 overflow-y-auto space-y-1.5 py-1">
+                    {bankAccounts.map(acc => (
+                      <label key={acc.id} className="flex items-center gap-2 px-1 py-0.5 hover:bg-slate-800 rounded-md cursor-pointer text-xs">
+                        <input 
+                          type="checkbox"
+                          checked={selectedIds.includes(acc.id)}
+                          onChange={() => handleToggleAccount(acc.id)}
+                          className="w-3.5 h-3.5 text-emerald-600 bg-slate-800 border-slate-700 rounded focus:ring-emerald-500 focus:ring-offset-slate-900"
+                        />
+                        <span className="font-medium text-slate-300">{acc.nickname}</span>
+                      </label>
+                    ))}
+                  </div>
+                  
+                  <button
+                    onClick={handleStartSync}
+                    disabled={selectedIds.length === 0 || isSyncing}
+                    className="w-full py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-bold hover:bg-emerald-500 disabled:opacity-40 transition-colors flex items-center justify-center gap-1.5 shadow-sm"
+                  >
+                    <RefreshCw size={11} className={isSyncing ? 'animate-spin' : ''} />
+                    <span>סנכרן {selectedIds.length} חשבונות</span>
+                  </button>
+                </div>
+              </>
+            )}
+
+            <button
+              onClick={handleTogglePopover}
+              disabled={isSyncing}
+              className="relative flex items-center justify-between w-full px-2.5 py-1.5 rounded-lg text-[11px] font-bold text-emerald-400 bg-emerald-500/[0.06] border border-emerald-500/15 hover:bg-emerald-500/[0.12] hover:border-emerald-500/30 transition-colors disabled:opacity-50"
+            >
+              <div className="flex items-center gap-1">
+                {isSyncing ? (
+                  <Loader2 size={11} className="animate-spin text-emerald-400" />
+                ) : (
+                  <RefreshCw size={11} className="text-emerald-400" />
+                )}
+                <span>סנכרן</span>
+              </div>
+              <span className="text-[9px] font-normal text-emerald-400/60" dir="rtl">
+                {formatTimeAgo(latestSyncDate)}
+              </span>
+            </button>
+          </div>
+        )}
 
         <div className="px-3 mb-3">
           <a

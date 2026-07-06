@@ -30,10 +30,12 @@ function paymentProgress(r: RecurringCharge): { current: number; total: number }
 interface Occurrence { key: string; year: number; month: number; isPast: boolean; isDismissed: boolean }
 
 function buildOccurrences(r: RecurringCharge): Occurrence[] {
-  if ((r.chargeType ?? 'permanent') !== 'periodic' || !r.endDate) return [];
-  const now   = new Date();
+  const now = new Date();
   const start = r.startDate ? new Date(r.startDate) : new Date(now.getFullYear(), now.getMonth(), 1);
-  const end   = new Date(r.endDate);
+  const end = (r.chargeType === 'periodic' && r.endDate) 
+    ? new Date(r.endDate) 
+    : new Date(now.getFullYear(), now.getMonth(), 1);
+
   const list: Occurrence[] = [];
   const cur = new Date(start.getFullYear(), start.getMonth(), 1);
   while (cur <= end) {
@@ -46,7 +48,7 @@ function buildOccurrences(r: RecurringCharge): Occurrence[] {
     });
     cur.setMonth(cur.getMonth() + 1);
   }
-  return list;
+  return list.sort((a, b) => b.key.localeCompare(a.key));
 }
 
 // ── Blank form ────────────────────────────────────────────────────────────
@@ -56,11 +58,11 @@ type FormState = {
   dayOfMonth: string; card: string; cancelUrl: string;
   chargeType: ChargeType; startDate: string; endDate: string;
 };
-const BLANK: FormState = {
+const getBlankForm = (): FormState => ({
   name: '', category: 'מנויים ובידור', amount: '',
   dayOfMonth: '1', card: 'ויזה כאל', cancelUrl: '',
-  chargeType: 'permanent', startDate: '', endDate: '',
-};
+  chargeType: 'permanent', startDate: new Date().toISOString().slice(0, 10), endDate: '',
+});
 
 // ── Main ──────────────────────────────────────────────────────────────────
 export default function RecurringCharges() {
@@ -71,13 +73,13 @@ export default function RecurringCharges() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [addModal,   setAddModal]   = useState(false);
   const [editItem,   setEditItem]   = useState<RecurringCharge | null>(null);
-  const [form,       setForm]       = useState<FormState>(BLANK);
+  const [form,       setForm]       = useState<FormState>(getBlankForm());
 
   const [occEdit, setOccEdit] = useState<{ rid: string; key: string } | null>(null);
   const [occForm, setOccForm] = useState({ amount: '', note: '', transactionId: '' });
 
   // ── Form helpers ─────────────────────────────────────────────────────
-  function openAdd() { setForm(BLANK); setAddModal(true); }
+  function openAdd() { setForm(getBlankForm()); setAddModal(true); }
 
   function openEdit(r: RecurringCharge) {
     setEditItem(r);
@@ -98,7 +100,7 @@ export default function RecurringCharges() {
       card: form.card, active: true,
       chargeType: form.chargeType,
       cancelUrl:  form.cancelUrl  || undefined,
-      startDate:  form.startDate  || undefined,
+      startDate:  form.startDate,
       endDate:    form.chargeType === 'periodic' ? (form.endDate || undefined) : undefined,
     });
     setAddModal(false);
@@ -111,7 +113,7 @@ export default function RecurringCharges() {
       dayOfMonth: +form.dayOfMonth, card: form.card,
       chargeType: form.chargeType,
       cancelUrl:  form.cancelUrl  || undefined,
-      startDate:  form.startDate  || undefined,
+      startDate:  form.startDate,
       endDate:    form.chargeType === 'periodic' ? (form.endDate || undefined) : undefined,
     });
     setEditItem(null);
@@ -166,9 +168,9 @@ export default function RecurringCharges() {
   const next7Total = next7.reduce((a, r) => a + r.amount, 0);
 
   // ── Render helpers ───────────────────────────────────────────────────
-  // Permanent: name + amount. Periodic: also requires startDate + endDate.
-  const isAddValid = !!(form.name && form.amount &&
-    (form.chargeType === 'permanent' || (form.startDate && form.endDate)));
+  // Requires name + amount + startDate. Periodic also requires endDate.
+  const isAddValid = !!(form.name && form.amount && form.startDate &&
+    (form.chargeType === 'permanent' || form.endDate));
 
   return (
     <div className="space-y-6">
@@ -230,10 +232,17 @@ export default function RecurringCharges() {
             <span className="text-sm font-semibold text-slate-600">חיובים קבועים</span>
             <span className="text-xs text-slate-400">(ללא תאריך סיום)</span>
           </div>
-          {permanent.map(r => (
-            <PermanentRow key={r.id} r={r} onEdit={openEdit} onToggle={() => toggleRecurring(r.id)} onDelete={() => deleteRecurring(r.id)}
-              onRestoreOccurrence={(key) => restoreOccurrence(r.id, key)} />
-          ))}
+          {permanent.map(r => {
+            const isExpanded = expandedId === r.id;
+            const occs = isExpanded ? buildOccurrences(r) : [];
+            const progress = paymentProgress(r);
+            const isExpired = r.endDate ? new Date(r.endDate) < now : false;
+            return <RecurringRow key={r.id} r={r} isExpanded={isExpanded} occs={occs} progress={progress} isExpired={isExpired}
+              onToggleExpand={() => setExpandedId(isExpanded ? null : r.id)}
+              onEdit={() => openEdit(r)} onToggle={() => toggleRecurring(r.id)} onDelete={() => deleteRecurring(r.id)}
+              onRestoreOccurrence={(key) => restoreOccurrence(r.id, key)} onOpenOccEdit={(key) => openOccEdit(r.id, key)} onClearOcc={(key) => clearOcc(r.id, key)}
+              transactions={transactions} />
+          })}
         </div>
       )}
 
@@ -249,156 +258,12 @@ export default function RecurringCharges() {
             const isExpanded = expandedId === r.id;
             const occs = isExpanded ? buildOccurrences(r) : [];
             const progress = paymentProgress(r);
-            const isExpired = r.endDate && new Date(r.endDate) < now;
-
-            return (
-              <Card key={r.id} className="p-0 overflow-hidden">
-                {/* Row header */}
-                <div
-                  className="flex items-center gap-3 px-5 py-4 cursor-pointer hover:bg-slate-50 transition-colors"
-                  onClick={() => setExpandedId(isExpanded ? null : r.id)}
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-semibold text-slate-900">{r.name}</span>
-                      <Badge variant={r.active && !isExpired ? 'blue' : 'gray'}>
-                        {isExpired ? 'הסתיים' : r.active ? 'פעיל' : 'מושהה'}
-                      </Badge>
-                    </div>
-                    <div className="text-xs text-slate-400 mt-0.5">
-                      {r.category} • כרטיס: {r.card} • יום {r.dayOfMonth} לחודש
-                      {r.startDate && <span className="mr-2">| מ-{r.startDate.slice(0,7)}</span>}
-                      {r.endDate && <span>עד {r.endDate.slice(0,7)}</span>}
-                    </div>
-                  </div>
-
-                  {/* Payment progress */}
-                  {progress && (
-                    <div className="text-center shrink-0">
-                      <div className="text-xs text-slate-400 mb-1">תשלום</div>
-                      <div className="text-sm font-bold text-blue-600">
-                        {progress.current}<span className="text-slate-400 font-normal">/{progress.total}</span>
-                      </div>
-                      <div className="w-16 h-1 bg-slate-100 rounded-full mt-1 overflow-hidden">
-                        <div
-                          className="h-full rounded-full bg-blue-400"
-                          style={{ width: `${(progress.current / progress.total) * 100}%` }}
-                        />
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="text-lg font-bold text-slate-900 shrink-0">{fmtCurrency(r.amount)}</div>
-
-                  <div className="flex items-center gap-1.5 shrink-0" onClick={e => e.stopPropagation()}>
-                    {r.cancelUrl && (
-                      <a href={r.cancelUrl} target="_blank" rel="noopener noreferrer"
-                        className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:text-blue-500">
-                        <ExternalLink size={13} />
-                      </a>
-                    )}
-                    <button onClick={() => openEdit(r)} className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-50">
-                      <Pencil size={13} />
-                    </button>
-                    <button onClick={() => toggleRecurring(r.id)} className={`p-1.5 rounded-lg border transition-colors ${r.active ? 'border-green-200 text-green-600 hover:bg-green-50' : 'border-slate-200 text-slate-400 hover:bg-slate-50'}`}>
-                      <Power size={13} />
-                    </button>
-                    <button onClick={() => deleteRecurring(r.id)} className="p-1.5 rounded-lg border border-red-100 text-red-400 hover:bg-red-50">
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
-
-                  <div className="text-slate-300 shrink-0">
-                    {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                  </div>
-                </div>
-
-                {/* Occurrence table */}
-                {isExpanded && (
-                  <div className="border-t border-slate-100 animate-slide-down">
-                    <div className="px-5 py-2 bg-slate-50 flex items-center justify-between">
-                      <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">פירוט תשלומים</span>
-                      <span className="text-xs text-slate-400">{occs.length} תשלומים</span>
-                    </div>
-                    <div className="divide-y divide-slate-50">
-                      {occs.map(occ => {
-                        const ov = r.occurrenceOverrides?.[occ.key];
-                        const linkedTxn = ov?.transactionId ? transactions.find(t => t.id === ov.transactionId) : undefined;
-                        const actualAmount = ov?.amount ?? r.amount;
-                        const isDiff = ov?.amount && ov.amount !== r.amount;
-
-                        if (occ.isDismissed) {
-                          return (
-                            <div key={occ.key} className="flex items-center gap-4 px-5 py-3 text-sm opacity-50">
-                              <div className="w-28 shrink-0">
-                                <div className="font-medium text-slate-400 line-through">{MONTHS_HE[occ.month - 1]} {occ.year}</div>
-                                <div className="text-xs text-slate-400">יום {r.dayOfMonth}</div>
-                              </div>
-                              <div className="flex-1" />
-                              <div className="flex items-center gap-2 shrink-0">
-                                <span className="text-xs bg-slate-100 text-slate-400 border border-slate-200 px-2 py-0.5 rounded-full">מדולג</span>
-                                <button
-                                  onClick={() => restoreOccurrence(r.id, occ.key)}
-                                  title="שחזר תשלום זה"
-                                  className="p-1.5 rounded-lg border border-violet-200 text-violet-500 hover:bg-violet-50"
-                                >
-                                  <RotateCcw size={11} />
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        }
-
-                        return (
-                          <div key={occ.key} className="flex items-center gap-4 px-5 py-3 hover:bg-slate-50/80 text-sm">
-                            <div className="w-28 shrink-0">
-                              <div className="font-medium text-slate-700">{MONTHS_HE[occ.month - 1]} {occ.year}</div>
-                              <div className="text-xs text-slate-400">יום {r.dayOfMonth}</div>
-                            </div>
-                            <div className="w-20 shrink-0 text-slate-400 text-xs">צפוי: {fmtCurrency(r.amount)}</div>
-                            <div className="w-24 shrink-0">
-                              <span className={`font-semibold ${isDiff ? 'text-orange-500' : 'text-slate-700'}`}>
-                                {fmtCurrency(actualAmount)}
-                              </span>
-                              {isDiff && <span className="text-xs text-orange-400 mr-1">↑</span>}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              {linkedTxn ? (
-                                <div className="inline-flex items-center gap-1.5 bg-blue-50 border border-blue-100 text-blue-700 rounded-lg px-2 py-1 text-xs">
-                                  <Link2 size={10} />
-                                  <span className="truncate max-w-36">{linkedTxn.business}</span>
-                                  <span className="text-blue-400">{fmtCurrency(linkedTxn.amount)}</span>
-                                </div>
-                              ) : (
-                                <span className="text-slate-300 text-xs">לא מקושר</span>
-                              )}
-                              {ov?.note && <div className="text-xs text-slate-500 mt-0.5">📝 {ov.note}</div>}
-                            </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              {linkedTxn ? (
-                                <span className="text-xs bg-green-50 text-green-600 border border-green-100 px-2 py-0.5 rounded-full">שולם</span>
-                              ) : occ.isPast ? (
-                                <span className="text-xs bg-slate-50 text-slate-400 border border-slate-100 px-2 py-0.5 rounded-full">לא מסומן</span>
-                              ) : (
-                                <span className="text-xs bg-amber-50 text-amber-600 border border-amber-100 px-2 py-0.5 rounded-full">עתידי</span>
-                              )}
-                              <button onClick={() => openOccEdit(r.id, occ.key)} className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-100">
-                                <Pencil size={11} />
-                              </button>
-                              {ov && !ov.dismissed && (
-                                <button onClick={() => clearOcc(r.id, occ.key)} className="p-1.5 rounded-lg border border-red-100 text-red-300 hover:bg-red-50">
-                                  <Trash2 size={11} />
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-              </Card>
-            );
+            const isExpired = r.endDate ? new Date(r.endDate) < now : false;
+            return <RecurringRow key={r.id} r={r} isExpanded={isExpanded} occs={occs} progress={progress} isExpired={isExpired}
+              onToggleExpand={() => setExpandedId(isExpanded ? null : r.id)}
+              onEdit={() => openEdit(r)} onToggle={() => toggleRecurring(r.id)} onDelete={() => deleteRecurring(r.id)}
+              onRestoreOccurrence={(key) => restoreOccurrence(r.id, key)} onOpenOccEdit={(key) => openOccEdit(r.id, key)} onClearOcc={(key) => clearOcc(r.id, key)}
+              transactions={transactions} />
           })}
         </div>
       )}
@@ -415,7 +280,7 @@ export default function RecurringCharges() {
       {/* ── Edit modal ───────────────────────────────────────────────── */}
       <Modal open={!!editItem} onClose={() => setEditItem(null)} title={`ערוך — ${editItem?.name ?? ''}`}>
         <ChargeForm form={form} setForm={setForm} categoryList={categoryList} />
-        <button onClick={saveEdit} className="w-full mt-4 bg-blue-600 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-blue-700">
+        <button onClick={saveEdit} disabled={!isAddValid} className="w-full mt-4 bg-blue-600 text-white rounded-xl py-2.5 text-sm font-medium hover:bg-blue-700 disabled:opacity-40">
           שמור שינויים
         </button>
       </Modal>
@@ -425,7 +290,7 @@ export default function RecurringCharges() {
         const r = recurring.find(r => r.id === occEdit.rid)!;
         const [y, m] = occEdit.key.split('-').map(Number);
         const monthLabel = `${MONTHS_HE[m - 1]} ${y}`;
-        const monthTxns = transactions.filter(t =>
+        const monthTxns = transactions.filter(t => !t.pending &&
           t.date.startsWith(occEdit.key) && (!t.recurringId || t.recurringId === occEdit.rid)
         );
         return (
@@ -475,51 +340,52 @@ export default function RecurringCharges() {
   );
 }
 
-// ── Permanent row (expandable when dismissed occurrences exist) ───────────
-function PermanentRow({ r, onEdit, onToggle, onDelete, onRestoreOccurrence }: {
-  r: RecurringCharge;
-  onEdit: (r: RecurringCharge) => void;
-  onToggle: () => void;
-  onDelete: () => void;
-  onRestoreOccurrence: (key: string) => void;
+
+// ── RecurringRow ───────────────────────────────────────────────────────────
+function RecurringRow({ r, isExpanded, occs, progress, isExpired, onToggleExpand, onEdit, onToggle, onDelete, onRestoreOccurrence, onOpenOccEdit, onClearOcc, transactions }: {
+  r: RecurringCharge; isExpanded: boolean; occs: Occurrence[]; progress: {current:number; total:number} | null; isExpired: boolean | '';
+  onToggleExpand: () => void; onEdit: () => void; onToggle: () => void; onDelete: () => void;
+  onRestoreOccurrence: (k: string) => void; onOpenOccEdit: (k: string) => void; onClearOcc: (k: string) => void; transactions: any[];
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const isExpired = r.endDate && new Date(r.endDate) < new Date();
-
-  const dismissed = Object.entries(r.occurrenceOverrides ?? {})
-    .filter(([, ov]) => ov.dismissed)
-    .map(([key]) => { const [y, m] = key.split('-').map(Number); return { key, year: y, month: m }; })
-    .sort((a, b) => a.key.localeCompare(b.key));
-
+  const now = new Date();
   return (
     <Card className="p-0 overflow-hidden">
-      <div className="flex items-center gap-3 px-5 py-4">
+      <div className="flex items-center gap-3 px-5 py-4 cursor-pointer hover:bg-slate-50 transition-colors" onClick={onToggleExpand}>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-semibold text-slate-900">{r.name}</span>
-            <Badge variant={r.active && !isExpired ? 'green' : 'gray'}>
-              {r.active ? 'פעיל' : 'מושהה'}
+            <Badge variant={r.active && !isExpired ? 'blue' : 'gray'}>
+              {isExpired ? 'הסתיים' : r.active ? 'פעיל' : 'מושהה'}
             </Badge>
-            {dismissed.length > 0 && (
-              <span className="text-[10px] bg-slate-100 text-slate-500 border border-slate-200 px-1.5 py-0.5 rounded-full">
-                {dismissed.length} מדולגים
-              </span>
-            )}
           </div>
           <div className="text-xs text-slate-400 mt-0.5">
             {r.category} • כרטיס: {r.card} • יום {r.dayOfMonth} לחודש
             {r.startDate && <span className="mr-2">| מ-{r.startDate.slice(0,7)}</span>}
-            {r.cancelUrl && (
-              <a href={r.cancelUrl} target="_blank" rel="noopener noreferrer"
-                className="text-blue-400 hover:text-blue-600 mr-2 inline-flex items-center gap-0.5">
-                <ExternalLink size={10} /> ביטול
-              </a>
-            )}
+            {r.endDate && <span>עד {r.endDate.slice(0,7)}</span>}
           </div>
         </div>
+
+        {progress && (
+          <div className="text-center shrink-0">
+            <div className="text-xs text-slate-400 mb-1">תשלום</div>
+            <div className="text-sm font-bold text-blue-600">
+              {progress.current}<span className="text-slate-400 font-normal">/{progress.total}</span>
+            </div>
+            <div className="w-16 h-1 bg-slate-100 rounded-full mt-1 overflow-hidden">
+              <div className="h-full rounded-full bg-blue-400" style={{ width: `${(progress.current / progress.total) * 100}%` }} />
+            </div>
+          </div>
+        )}
+
         <div className="text-lg font-bold text-slate-900 shrink-0">{fmtCurrency(r.amount)}</div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          <button onClick={() => onEdit(r)} className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-50">
+
+        <div className="flex items-center gap-1.5 shrink-0" onClick={e => e.stopPropagation()}>
+          {r.cancelUrl && (
+            <a href={r.cancelUrl} target="_blank" rel="noopener noreferrer" className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:text-blue-500">
+              <ExternalLink size={13} />
+            </a>
+          )}
+          <button onClick={onEdit} className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-50">
             <Pencil size={13} />
           </button>
           <button onClick={onToggle} className={`p-1.5 rounded-lg border transition-colors ${r.active ? 'border-green-200 text-green-600 hover:bg-green-50' : 'border-slate-200 text-slate-400 hover:bg-slate-50'}`}>
@@ -528,41 +394,87 @@ function PermanentRow({ r, onEdit, onToggle, onDelete, onRestoreOccurrence }: {
           <button onClick={onDelete} className="p-1.5 rounded-lg border border-red-100 text-red-400 hover:bg-red-50">
             <Trash2 size={13} />
           </button>
-          {dismissed.length > 0 && (
-            <button onClick={() => setExpanded(v => !v)} className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-50">
-              {expanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
-            </button>
-          )}
+        </div>
+
+        <div className="text-slate-300 shrink-0">
+          {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
         </div>
       </div>
 
-      {/* Dismissed occurrences list */}
-      {expanded && dismissed.length > 0 && (
+      {isExpanded && (
         <div className="border-t border-slate-100 animate-slide-down">
           <div className="px-5 py-2 bg-slate-50 flex items-center justify-between">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">תשלומים שדולגו</span>
-            <span className="text-xs text-slate-400">{dismissed.length} תשלומים</span>
+            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">פירוט תשלומים</span>
+            <span className="text-xs text-slate-400">{occs.length} תשלומים</span>
           </div>
           <div className="divide-y divide-slate-50">
-            {dismissed.map(d => (
-              <div key={d.key} className="flex items-center gap-4 px-5 py-3 text-sm opacity-60">
-                <div className="w-28 shrink-0">
-                  <div className="font-medium text-slate-400 line-through">{MONTHS_HE[d.month - 1]} {d.year}</div>
-                  <div className="text-xs text-slate-400">יום {r.dayOfMonth}</div>
+            {occs.map(occ => {
+              const ov = r.occurrenceOverrides?.[occ.key];
+              const linkedTxn = ov?.transactionId ? transactions.find(t => t.id === ov.transactionId) : undefined;
+              const actualAmount = ov?.amount ?? r.amount;
+              const isDiff = ov?.amount && ov.amount !== r.amount;
+
+              if (occ.isDismissed) {
+                return (
+                  <div key={occ.key} className="flex items-center gap-4 px-5 py-3 text-sm opacity-50">
+                    <div className="w-28 shrink-0">
+                      <div className="font-medium text-slate-400 line-through">{MONTHS_HE[occ.month - 1]} {occ.year}</div>
+                      <div className="text-xs text-slate-400">יום {r.dayOfMonth}</div>
+                    </div>
+                    <div className="flex-1" />
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-xs bg-slate-100 text-slate-400 border border-slate-200 px-2 py-0.5 rounded-full">מדולג</span>
+                      <button onClick={() => onRestoreOccurrence(occ.key)} title="שחזר תשלום זה" className="p-1.5 rounded-lg border border-violet-200 text-violet-500 hover:bg-violet-50">
+                        <RotateCcw size={11} />
+                      </button>
+                    </div>
+                  </div>
+                );
+              }
+
+              return (
+                <div key={occ.key} className="flex items-center gap-4 px-5 py-3 hover:bg-slate-50/80 text-sm">
+                  <div className="w-28 shrink-0">
+                    <div className="font-medium text-slate-700">{MONTHS_HE[occ.month - 1]} {occ.year}</div>
+                    <div className="text-xs text-slate-400">יום {r.dayOfMonth}</div>
+                  </div>
+                  <div className="w-20 shrink-0 text-slate-400 text-xs">צפוי: {fmtCurrency(r.amount)}</div>
+                  <div className="w-24 shrink-0">
+                    <span className={`font-semibold ${isDiff ? 'text-orange-500' : 'text-slate-700'}`}>{fmtCurrency(actualAmount)}</span>
+                    {isDiff && <span className="text-xs text-orange-400 mr-1">↑</span>}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    {linkedTxn ? (
+                      <div className="inline-flex items-center gap-1.5 bg-blue-50 border border-blue-100 text-blue-700 rounded-lg px-2 py-1 text-xs">
+                        <Link2 size={10} />
+                        <span className="truncate max-w-36">{linkedTxn.business}</span>
+                        <span className="text-blue-400">{fmtCurrency(linkedTxn.amount)}</span>
+                      </div>
+                    ) : (
+                      <span className="text-slate-300 text-xs">לא מקושר</span>
+                    )}
+                    {ov?.note && <div className="text-xs text-slate-500 mt-0.5">📝 {ov.note}</div>}
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {linkedTxn ? (
+                      <span className="text-xs bg-green-50 text-green-600 border border-green-100 px-2 py-0.5 rounded-full">שולם</span>
+                    ) : occ.isPast ? (
+                      <span className="text-xs bg-slate-50 text-slate-400 border border-slate-100 px-2 py-0.5 rounded-full">לא מסומן</span>
+                    ) : (
+                      <span className="text-xs bg-amber-50 text-amber-600 border border-amber-100 px-2 py-0.5 rounded-full">עתידי</span>
+                    )}
+                    <button onClick={() => onOpenOccEdit(occ.key)} className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:bg-slate-100">
+                      <Pencil size={11} />
+                    </button>
+                    {ov && !ov.dismissed && (
+                      <button onClick={() => onClearOcc(occ.key)} className="p-1.5 rounded-lg border border-red-100 text-red-300 hover:bg-red-50">
+                        <Trash2 size={11} />
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div className="flex-1" />
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-xs bg-slate-100 text-slate-400 border border-slate-200 px-2 py-0.5 rounded-full">מדולג</span>
-                  <button
-                    onClick={() => onRestoreOccurrence(d.key)}
-                    title="שחזר תשלום זה"
-                    className="p-1.5 rounded-lg border border-violet-200 text-violet-500 hover:bg-violet-50"
-                  >
-                    <RotateCcw size={11} />
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -575,7 +487,7 @@ function ChargeForm({ form, setForm, categoryList }: {
   form: FormState; setForm: (f: FormState) => void; categoryList: string[];
 }) {
   const isPeriodic = form.chargeType === 'periodic';
-  const startDateMissing = isPeriodic && !form.startDate;
+  const startDateMissing = !form.startDate;
   const endDateMissing   = isPeriodic && !form.endDate;
 
   return (
@@ -657,8 +569,7 @@ function ChargeForm({ form, setForm, categoryList }: {
       <div className={`grid gap-3 ${isPeriodic ? 'grid-cols-2' : 'grid-cols-1'}`}>
         <div>
           <label className="block text-sm font-medium text-slate-700 mb-1">
-            תאריך התחלה
-            {isPeriodic && <span className="text-red-500 mr-1">* חובה</span>}
+            תאריך התחלה <span className="text-red-500 mr-1">* חובה</span>
           </label>
           <input
             type="date"
@@ -671,7 +582,7 @@ function ChargeForm({ form, setForm, categoryList }: {
             }`}
           />
           {startDateMissing && (
-            <p className="text-xs text-red-500 mt-1">יש להגדיר תאריך התחלה לחיוב מחזורי</p>
+            <p className="text-xs text-red-500 mt-1">יש להגדיר תאריך התחלה</p>
           )}
         </div>
 

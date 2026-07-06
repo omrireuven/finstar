@@ -1,5 +1,6 @@
 import { X } from 'lucide-react';
 import { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import clsx from 'clsx';
 
 interface ModalProps {
@@ -22,7 +23,7 @@ export default function Modal({ open, onClose, title, children, size = 'md' }: M
 
   if (!open) return null;
 
-  return (
+  return createPortal(
     <>
       {/*
         Backdrop and panel are separate fixed siblings so the backdrop's
@@ -56,6 +57,7 @@ export default function Modal({ open, onClose, title, children, size = 'md' }: M
           <div className="px-6 py-5">{children}</div>
         </div>
       </div>
-    </>
+    </>,
+    document.body
   );
 }

@@ -1,0 +1,54 @@
+services:
+  # ── Frontend (nginx + static build) ─────────────────────────────────
+  finstar-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: finstar-web
+    ports:
+      - "8080:80"
+    depends_on:
+      - finstar-server
+      - finstar-scraper
+    restart: unless-stopped
+    networks:
+      - finstar-net
+
+  # ── DB Server (JSON file persistence) ───────────────────────────────
+  finstar-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.db
+    container_name: finstar-server
+    ports:
+      - "3002:3000"
+    volumes:
+      - finstar-data:/data
+    restart: unless-stopped
+    networks:
+      - finstar-net
+
+  # ── Bank Scraper Server (Puppeteer + Chromium) ──────────────────────
+  finstar-scraper:
+    build:
+      context: .
+      dockerfile: Dockerfile.scraper
+    container_name: finstar-scraper
+    ports:
+      - "3003:3003"
+    # Chromium in Docker needs these security flags
+    security_opt:
+      - seccomp=unconfined
+    # Shared memory size for Chromium
+    shm_size: '1gb'
+    restart: unless-stopped
+    networks:
+      - finstar-net
+
+volumes:
+  finstar-data:
+    driver: local
+
+networks:
+  finstar-net:
+    driver: bridge

@@ -214,16 +214,20 @@ export async function capturePortfolioChart(
 
   // Load history (cache first)
   const allHistory = new Map<string, HistoricalPoint[]>();
-  await Promise.all(
-    tickers.map(async (ticker) => {
-      const cached = getCached(`${ticker}:3mo`);
-      if (cached) { allHistory.set(ticker, cached); return; }
-      try {
-        const data = await fetchHistory(ticker, corsProxy, '3mo');
-        if (data.length > 0) allHistory.set(ticker, data);
-      } catch { /* skip missing ticker */ }
-    })
-  );
+  for (const ticker of tickers) {
+    const cached = getCached(`${ticker}:3mo`);
+    if (cached) { 
+      allHistory.set(ticker, cached); 
+      continue; 
+    }
+    try {
+      const data = await fetchHistory(ticker, corsProxy, '3mo');
+      if (data.length > 0) allHistory.set(ticker, data);
+      await new Promise(r => setTimeout(r, 300));
+    } catch { 
+      /* skip missing ticker */ 
+    }
+  }
 
   const timeline = buildTimeline(allHistory, lots, usdIls);
   if (timeline.length < 2) throw new Error('insufficient data');

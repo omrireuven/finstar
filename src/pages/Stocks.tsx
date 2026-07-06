@@ -226,21 +226,28 @@ export default function Stocks() {
     if (missing.length === 0) return;
 
     setLoadingPortfolio(true);
-    Promise.allSettled(
-      missing.map((ticker) =>
-        fetchHistory(ticker, corsProxy, portfolioRange).then((data) => {
+    (async () => {
+      const results: { ticker: string; data: any }[] = [];
+      for (const ticker of missing) {
+        try {
+          const data = await fetchHistory(ticker, corsProxy, portfolioRange);
           setEntry(`${ticker}:${portfolioRange}`, data);
-          return { ticker, data };
-        })
-      )
-    ).then((results) => {
+          results.push({ ticker, data });
+          // Small delay to prevent 429 Too Many Requests
+          await new Promise(r => setTimeout(r, 300));
+        } catch (err) {
+          // ignore
+        }
+      }
+      
       setAllHistory((prev) => {
         const next = new Map(prev);
-        for (const r of results)
-          if (r.status === 'fulfilled') next.set(r.value.ticker, r.value.data);
+        for (const r of results) next.set(r.ticker, r.data);
         return next;
       });
-    }).finally(() => setLoadingPortfolio(false));
+      setLoadingPortfolio(false);
+    })();
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTickers.join(','), portfolioRange, corsProxy]);
 
@@ -622,7 +629,7 @@ export default function Stocks() {
               <YAxis tick={{ fontSize: 11, fill: '#64748b' }} axisLine={false} tickLine={false}
                 width={65} tickFormatter={(v) => `₪${(v / 1000).toFixed(0)}k`} domain={['auto', 'auto']} />
               <Tooltip
-                formatter={(v: unknown, name: string) => [fmtCurrency(v as number), name === 'value' ? 'שווי תיק' : 'עלות רכישה']}
+                formatter={(v: unknown, name: any) => [fmtCurrency(v as number), name === 'value' ? 'שווי תיק' : 'עלות רכישה']}
                 contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 13 }} />
               {showDynamicCost ? (
                 <Area type="stepAfter" dataKey="cost" stroke="#94a3b8" fill="none" strokeWidth={2} strokeDasharray="4 4" />

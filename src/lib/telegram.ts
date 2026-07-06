@@ -4,7 +4,7 @@
  * User creates bot via @BotFather, gets token + chat_id.
  */
 
-const TG_BASE = 'https://api.telegram.org';
+const TG_BASE = typeof window !== 'undefined' ? '/api/telegram' : 'https://api.telegram.org';
 
 // ── Incoming update types ────────────────────────────────────────────────────
 
@@ -19,9 +19,15 @@ export async function getUpdatesPolling(token: string, offset: number): Promise<
   if (!token) return [];
   try {
     const res = await fetch(`${TG_BASE}/bot${token}/getUpdates?offset=${offset}&limit=100&timeout=0`);
+    if (res.status === 401) {
+      throw new Error('401_UNAUTHORIZED');
+    }
     const json = await res.json();
     return json.ok ? (json.result as TgUpdate[]) : [];
-  } catch { return []; }
+  } catch (err: any) {
+    if (err?.message === '401_UNAUTHORIZED') throw err;
+    return [];
+  }
 }
 
 /**

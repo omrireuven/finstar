@@ -28,7 +28,7 @@ export default function Journal() {
   // ── Per-month live metrics ─────────────────────────────────────────────────
   function liveMetrics(year: number, month: number) {
     const key = `${year}-${String(month).padStart(2, '0')}`;
-    const txns = transactions.filter((t) => t.date.startsWith(key));
+    const txns = transactions.filter((t) => !t.pending && t.date.startsWith(key));
     const inc = income.filter((e) => e.date.startsWith(key));
 
     const totalExpenses = txns.reduce((a, t) => a + t.amount, 0);
@@ -71,7 +71,7 @@ export default function Journal() {
           const month = i + 1;
           const entry = getEntry(month);
           const key = `${selectedYear}-${String(month).padStart(2, '0')}`;
-          const spent = transactions.filter((t) => t.date.startsWith(key)).reduce((a, t) => a + t.amount, 0);
+          const spent = transactions.filter((t) => !t.pending && t.date.startsWith(key)).reduce((a, t) => a + t.amount, 0);
           const isSelected = selectedMonth === month;
           const score = entry?.score ?? null;
           const hasData = spent > 0 || !!entry;

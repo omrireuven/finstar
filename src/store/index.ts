@@ -1,45 +1,49 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage, type StateStorage } from 'zustand/middleware';
 
+const apiUrl = typeof window === 'undefined' ? 'http://localhost:3002/api/db' : '/api/db';
+
 const serverStorage: StateStorage = {
   getItem: async (name: string): Promise<string | null> => {
     try {
-      const res = await fetch('/api/db');
+      const res = await fetch(apiUrl);
       if (res.ok) {
         const data = await res.json();
         if (!data || Object.keys(data).length === 0 || data.state === null) {
+          console.log('Server returned empty data, falling back to local storage');
+          if (typeof window !== 'undefined' && window.localStorage) return window.localStorage.getItem(name);
           return null;
         }
         return JSON.stringify(data);
       }
     } catch (e) {
       console.warn('Failed to fetch from server db, falling back to local storage', e);
-      return localStorage.getItem(name);
+      if (typeof window !== 'undefined' && window.localStorage) return window.localStorage.getItem(name);
     }
     return null;
   },
   setItem: async (name: string, value: string): Promise<void> => {
     try {
-      await fetch('/api/db', {
+      await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: value,
       });
-      localStorage.setItem(name, value);
+      if (typeof window !== 'undefined' && window.localStorage) window.localStorage.setItem(name, value);
     } catch (e) {
       console.warn('Failed to save to server db, saving locally', e);
-      localStorage.setItem(name, value);
+      if (typeof window !== 'undefined' && window.localStorage) window.localStorage.setItem(name, value);
     }
   },
   removeItem: async (name: string): Promise<void> => {
-    localStorage.removeItem(name);
+    if (typeof window !== 'undefined' && window.localStorage) window.localStorage.removeItem(name);
   },
 };
 import { useMemo } from 'react';
 import type {
   Transaction, RecurringCharge, RecurringOccurrenceOverride,
   PortfolioLot, SavingsAccount,
-  GemelFund, HishtalmutFund, PensionFund, IncomeEntry, Goal, JournalEntry, Category, CategoryDef,
+  GemelFund, HishtalmutFund, PensionFund, IncomeEntry, Goal, JournalEntry, Category, CategoryDef, AiBatchRecommendations
 } from '../types';
 import { ALL_CATEGORIES, CATEGORY_COLORS } from '../types';
 import {
@@ -55,13 +59,22 @@ const INITIAL_CATEGORIES: CategoryDef[] = ALL_CATEGORIES.map((name, i) => ({
   color: CATEGORY_COLORS[name] ?? '#9ca3af',
   isBuiltIn: true,
 }));
+export interface CategoryRuleMeta {
+  date: string;
+  source: 'ai' | 'manual' | 'ai-override';
+  originalAiCat?: string;
+}
 
 interface FinstarState {
   transactions: Transaction[];
+  ignoredIdentifiers: string[]; // Identifiers of deleted scraped transactions to prevent re-import
+  addIgnoredIdentifier: (id: string) => void;
+  aiRecommendations: AiBatchRecommendations | null; // stored batch recommendations
   recurring: RecurringCharge[];
   lots: PortfolioLot[];
   prices: Record<string, number>;
   usdIls: number;
+  usdIlsLastUpdate: string;
   savings: SavingsAccount[];
   gemel: GemelFund[];
   hishtalmut: HishtalmutFund[];
@@ -72,11 +85,16 @@ interface FinstarState {
   lastPriceUpdate: string;
   categories: CategoryDef[];
   categoryRules: Record<string, Category>; // business name → category
+  categoryRulesMeta: Record<string, CategoryRuleMeta>; // business name → rule metadata
 
   addTransactions: (txns: Transaction[]) => void;
   updateTransaction: (id: string, patch: Partial<Transaction>) => void;
   deleteTransaction: (id: string) => void;
+  deleteTransactions: (ids: string[]) => void;
   overrideCategory: (id: string, category: Category) => void;
+  markTransactionsAsAiProcessed: (ids: string[], log?: { prompt: string; response: string }) => void;
+  resetAiProcessing: (dateCutoff?: string) => void;
+  setAiRecommendations: (recommendations: AiBatchRecommendations | null) => void;
 
   addRecurring: (r: RecurringCharge) => void;
   updateRecurring: (id: string, patch: Partial<RecurringCharge>) => void;
@@ -105,6 +123,7 @@ interface FinstarState {
   updatePension: (id: string, patch: Partial<PensionFund>) => void;
 
   addIncome: (e: Omit<IncomeEntry, 'id'>) => void;
+  addIncomes: (incomes: IncomeEntry[]) => void;
   updateIncome: (id: string, patch: Partial<IncomeEntry>) => void;
   deleteIncome: (id: string) => void;
 
@@ -116,10 +135,13 @@ interface FinstarState {
   removeCategory: (id: string) => void;
 
   /** Save a business→category rule and retroactively update all matching transactions. */
-  setCategoryRule: (business: string, category: Category) => void;
+  setCategoryRule: (business: string, category?: Category, meta?: CategoryRuleMeta) => void;
   deleteCategoryRule: (business: string) => void;
 
+  setGemelGoal: (id: string, goalType: string | 'unassigned') => void;
+
   resetAllData: () => void;
+  resetDataPartial: (keys: string[]) => void;
 
   addJournalEntry: (e: Omit<JournalEntry, 'id'>) => void;
 }
@@ -128,10 +150,13 @@ export const useStore = create<FinstarState>()(
   persist(
     (set) => ({
       transactions: [],
+      ignoredIdentifiers: [],
+      aiRecommendations: null,
       recurring: [],
       lots: [],
       prices: {},
       usdIls: USD_ILS,
+      usdIlsLastUpdate: new Date(0).toISOString(),
       savings: [],
       gemel: [],
       hishtalmut: [],
@@ -139,15 +164,20 @@ export const useStore = create<FinstarState>()(
       income: [],
       goals: [],
       journal: [],
-      lastPriceUpdate: '',
+      lastPriceUpdate: new Date(0).toISOString(),
       categories: INITIAL_CATEGORIES,
       categoryRules: {},
+      categoryRulesMeta: {},
 
       addTransactions: (txns) =>
         set((s) => {
           const existingKeys = new Set(s.transactions.map((t) => `${t.date}-${t.business}-${t.amount}`));
           const fresh = txns
-            .filter((t) => !existingKeys.has(`${t.date}-${t.business}-${t.amount}`))
+            .filter((t) => {
+              if (existingKeys.has(`${t.date}-${t.business}-${t.amount}`)) return false;
+              if (t.metadata?.identifier && s.ignoredIdentifiers.includes(String(t.metadata.identifier))) return false;
+              return true;
+            })
             .map((t) => {
               const ruleCategory = s.categoryRules[t.business];
               // '__manual__' = user wants to categorize this business manually every time
@@ -163,10 +193,61 @@ export const useStore = create<FinstarState>()(
         set((s) => ({ transactions: s.transactions.map((t) => t.id === id ? { ...t, ...patch } : t) })),
 
       deleteTransaction: (id) =>
-        set((s) => ({ transactions: s.transactions.filter((t) => t.id !== id) })),
+        set((s) => {
+          const t = s.transactions.find((tx) => tx.id === id);
+          if (t?.metadata?.identifier) {
+            return {
+              transactions: s.transactions.filter((tx) => tx.id !== id),
+              ignoredIdentifiers: [...s.ignoredIdentifiers, String(t.metadata.identifier)]
+            };
+          }
+          return { transactions: s.transactions.filter((tx) => tx.id !== id) };
+        }),
+
+      deleteTransactions: (ids) =>
+        set((s) => {
+          const idSet = new Set(ids);
+          const toDelete = s.transactions.filter((tx) => idSet.has(tx.id));
+          const newIgnored = toDelete
+            .map((t) => t.metadata?.identifier ? String(t.metadata.identifier) : null)
+            .filter((id): id is string => id !== null);
+
+          return {
+            transactions: s.transactions.filter((tx) => !idSet.has(tx.id)),
+            ignoredIdentifiers: newIgnored.length > 0 ? [...s.ignoredIdentifiers, ...newIgnored] : s.ignoredIdentifiers
+          };
+        }),
+        
+      addIgnoredIdentifier: (id) => set((s) => {
+        if (!s.ignoredIdentifiers.includes(id)) {
+          return { ignoredIdentifiers: [...s.ignoredIdentifiers, id] };
+        }
+        return s;
+      }),
 
       overrideCategory: (id, category) =>
-        set((s) => ({ transactions: s.transactions.map((t) => t.id === id ? { ...t, category, categoryOverride: category, aiCategorized: false } : t) })),
+        set((state) => ({
+          transactions: state.transactions.map((t) => (t.id === id ? { ...t, categoryOverride: category, category } : t)),
+        })),
+
+      markTransactionsAsAiProcessed: (ids, log) =>
+        set((state) => ({
+          transactions: state.transactions.map((t) => (ids.includes(t.id) ? { ...t, aiProcessed: true, aiLog: log } : t)),
+        })),
+
+      setAiRecommendations: (recommendations) =>
+        set(() => ({ aiRecommendations: recommendations })),
+
+      resetAiProcessing: (dateCutoff) =>
+        set((s) => {
+          return {
+            transactions: s.transactions.map((t) => {
+              if (t.isVirtual) return t;
+              if (dateCutoff && t.date < dateCutoff) return t;
+              return { ...t, aiProcessed: false, aiLog: undefined };
+            }),
+          };
+        }),
 
       addRecurring: (r) => set((s) => ({ recurring: [...s.recurring, r] })),
       updateRecurring: (id, patch) =>
@@ -195,7 +276,7 @@ export const useStore = create<FinstarState>()(
         set((s) => ({ lots: s.lots.map((l) => l.id === id ? { ...l, ...patch } : l) })),
       deleteLot: (id) => set((s) => ({ lots: s.lots.filter((l) => l.id !== id) })),
       updatePrices: (prices) => set({ prices, lastPriceUpdate: new Date().toISOString() }),
-      setUsdIls: (rate) => set({ usdIls: rate }),
+      setUsdIls: (rate) => set({ usdIls: rate, usdIlsLastUpdate: new Date().toISOString() }),
 
       addSavings: (sv) => set((s) => ({ savings: [...s.savings, { ...sv, id: nanoid() }] })),
       updateSavings: (id, patch) =>
@@ -216,6 +297,11 @@ export const useStore = create<FinstarState>()(
         set((s) => ({ pension: s.pension.map((p) => p.id === id ? { ...p, ...patch } : p) })),
 
       addIncome: (e) => set((s) => ({ income: [...s.income, { ...e, id: nanoid() }] })),
+      addIncomes: (incomes) => set((s) => {
+        const existingKeys = new Set(s.income.map((i) => `${i.date}-${i.source}-${i.netAmount}`));
+        const fresh = incomes.filter((i) => !existingKeys.has(`${i.date}-${i.source}-${i.netAmount}`));
+        return { income: [...s.income, ...fresh] };
+      }),
       updateIncome: (id, patch) =>
         set((s) => ({ income: s.income.map((e) => e.id === id ? { ...e, ...patch } : e) })),
       deleteIncome: (id) => set((s) => ({ income: s.income.filter((e) => e.id !== id) })),
@@ -266,21 +352,55 @@ export const useStore = create<FinstarState>()(
           };
         }),
 
-      setCategoryRule: (business, category) =>
-        set((s) => ({
-          categoryRules: { ...s.categoryRules, [business]: category },
-          transactions: s.transactions.map((t) =>
+      setCategoryRule: (business, category, meta) =>
+        set((s) => {
+          const rules = { ...s.categoryRules };
+          const metaRules = { ...(s.categoryRulesMeta || {}) };
+          
+          if (category === undefined) {
+            delete rules[business];
+            delete metaRules[business];
+          } else {
+            rules[business] = category;
+            metaRules[business] = meta || {
+              date: new Date().toISOString(),
+              source: 'manual'
+            };
+          }
+          
+          const updatedTransactions = s.transactions.map((t) =>
             t.business === business
-              ? { ...t, category, categoryOverride: category, aiCategorized: false }
+              ? { ...t, category: category || "אחר", categoryOverride: category, aiCategorized: false }
               : t
-          ),
-        })),
+          );
+
+          return { categoryRules: rules, categoryRulesMeta: metaRules, transactions: updatedTransactions };
+        }),
 
       deleteCategoryRule: (business) =>
         set((s) => {
           const rules = { ...s.categoryRules };
+          const metaRules = { ...(s.categoryRulesMeta || {}) };
           delete rules[business];
-          return { categoryRules: rules };
+          delete metaRules[business];
+          return { categoryRules: rules, categoryRulesMeta: metaRules };
+        }),
+
+      setGemelGoal: (id, goalType) =>
+        set((s) => ({
+          gemel: s.gemel.map((g) => (g.id === id ? { ...g, goalType } : g)),
+        })),
+
+      resetDataPartial: (keys) =>
+        set((s) => {
+          const next: any = {};
+          keys.forEach(k => {
+            if (k === 'prices' || k === 'categoryRules' || k === 'categoryRulesMeta') next[k] = {};
+            else if (k === 'usdIls') { next[k] = 3.65; next['usdIlsLastUpdate'] = ''; }
+            else if (k === 'lastPriceUpdate') next[k] = '';
+            else next[k] = [];
+          });
+          return next;
         }),
 
       resetAllData: () =>
@@ -290,6 +410,7 @@ export const useStore = create<FinstarState>()(
           lots: [],
           prices: {},
           usdIls: USD_ILS,
+          usdIlsLastUpdate: '',
           savings: [],
           gemel: [],
           hishtalmut: [],
@@ -299,6 +420,7 @@ export const useStore = create<FinstarState>()(
           journal: [],
           lastPriceUpdate: '',
           categoryRules: {},
+          categoryRulesMeta: {},
           // categories kept — user configured them
         }),
 
@@ -309,6 +431,51 @@ export const useStore = create<FinstarState>()(
     {
       name: 'finstar-store',
       storage: createJSONStorage(() => serverStorage),
+      partialize: (state) => ({
+        ...state,
+        aiRecommendations: state.aiRecommendations 
+          ? { ...state.aiRecommendations, log: undefined }
+          : null,
+      }),
+      version: 3,
+      migrate: (persistedState: any, version: number) => {
+        if (version === 0) {
+          // Replace all existing categories with the new list and colors
+          persistedState.categories = INITIAL_CATEGORIES;
+          // Optionally migrate transactions that used old categories?
+          // For now, we just replace the categories list. Old transactions will show the text, 
+          // but might not have a color until they are re-categorized or bulk updated.
+          // Wait, 'אחר' is now 'אחר (בלתי מתוכנן)'.
+          persistedState.transactions = persistedState.transactions?.map((t: any) => {
+            if (t.category === 'אחר') return { ...t, category: 'אחר (בלתי מתוכנן)' };
+            if (t.category === 'תחבורה') return { ...t, category: 'רכב - אנרגיה' }; // best guess mapping
+            if (t.category === 'ביטוח') return { ...t, category: 'ביטוחים' };
+            if (t.category === 'חינוך') return { ...t, category: 'חינוך ואקדמיה' };
+            if (t.category === 'קניות') return { ...t, category: 'קניות כלליות' };
+            return t;
+          }) || [];
+          persistedState.recurring = persistedState.recurring?.map((r: any) => {
+            if (r.category === 'אחר') return { ...r, category: 'אחר (בלתי מתוכנן)' };
+            if (r.category === 'תחבורה') return { ...r, category: 'רכב - אנרגיה' };
+            if (r.category === 'ביטוח') return { ...r, category: 'ביטוחים' };
+            if (r.category === 'חינוך') return { ...r, category: 'חינוך ואקדמיה' };
+            if (r.category === 'קניות') return { ...r, category: 'קניות כלליות' };
+            return r;
+          }) || [];
+        }
+        
+        if (version === 0 || version === 1 || version === 2) {
+          const onlineCat = 'קניות אונליין';
+          if (!persistedState.categories?.find((c: any) => c.name === onlineCat)) {
+            persistedState.categories?.push({
+              name: onlineCat,
+              color: '#f472b6'
+            });
+          }
+        }
+        
+        return persistedState as FinstarState;
+      },
     }
   )
 );
@@ -380,8 +547,9 @@ export function useAllTransactions(): Transaction[] {
       for (const mk of genMonths(startKey, endKey)) {
         // Already handled by a real linked transaction
         if (covered.has(`${rec.id}|${mk}`)) continue;
-        // Occurrence override explicitly tied to a real transaction
-        if (rec.occurrenceOverrides?.[mk]?.transactionId) continue;
+        // Occurrence override explicitly tied to a real transaction that still exists
+        const overrideTxId = rec.occurrenceOverrides?.[mk]?.transactionId;
+        if (overrideTxId && transactions.some(t => t.id === overrideTxId)) continue;
         // User explicitly dismissed this occurrence
         if (rec.occurrenceOverrides?.[mk]?.dismissed) continue;
 

@@ -83,8 +83,8 @@ export const mockSavings: SavingsAccount[] = [
 ];
 
 export const mockGemel: GemelFund[] = [
-  { id: id(400), name: 'גמל אג"ח שקלי', company: 'מיטב', balance: 45000, track: 'אג"ח שקלי', managementFee: 0.3, annualReturn: 3.8, totalReturn: 12.5 },
-  { id: id(401), name: 'גמל מניות', company: 'הפניקס', balance: 28000, track: 'מניות', managementFee: 0.5, annualReturn: 14.2, totalReturn: 38.7 },
+  { id: id(400), name: 'גמל אג"ח שקלי', company: 'מיטב', balance: 45000, track: 'אג"ח שקלי', managementFee: 0.3, annualReturn: 3.8, depositFee: 0, employeeContribution: 0, employerContribution: 0, salary: 0 },
+  { id: id(401), name: 'גמל מניות', company: 'הפניקס', balance: 28000, track: 'מניות', managementFee: 0.5, annualReturn: 14.2, depositFee: 0, employeeContribution: 0, employerContribution: 0, salary: 0 },
 ];
 
 export const mockPension: PensionFund[] = [

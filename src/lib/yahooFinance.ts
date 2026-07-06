@@ -4,11 +4,15 @@
  * doesn't send CORS headers. Free plan: no hard rate limit — we use 60s polling.
  */
 
-const YF_BASE = 'https://query1.finance.yahoo.com';
+const YF_BASE = 'https://query2.finance.yahoo.com';
+
+// Cache to prevent duplicate requests across mounts
+const quoteCache: Record<string, { data: QuoteResult; timestamp: number }> = {};
+const CACHE_TTL = 30000; // 30 seconds
 
 function proxied(proxy: string, url: string): string {
   if (proxy === '/api/yahoo/') {
-    return url.replace('https://query1.finance.yahoo.com/', '/api/yahoo/');
+    return url.replace(/^https:\/\/query[12]\.finance\.yahoo\.com\//, '/api/yahoo/');
   }
   if (!proxy) return url;
   return proxy + encodeURIComponent(url);
@@ -43,39 +47,58 @@ export async function fetchQuotes(
   proxy: string
 ): Promise<Record<string, QuoteResult>> {
   const results: Record<string, QuoteResult> = {};
+  const now = Date.now();
 
-  await Promise.allSettled(
-    tickers.map(async (ticker) => {
-      try {
-        const url = `${YF_BASE}/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1m&range=1d&includePrePost=false`;
-        const res = await fetch(proxied(proxy, url), {
-          headers: { Accept: 'application/json' },
-        });
-        if (!res.ok) return;
-        const json = await res.json();
-        const meta = json?.chart?.result?.[0]?.meta;
-        if (!meta) return;
+  for (const ticker of tickers) {
+    // Check cache first
+    if (quoteCache[ticker] && now - quoteCache[ticker].timestamp < CACHE_TTL) {
+      results[ticker] = quoteCache[ticker].data;
+      continue;
+    }
 
-        const price: number = meta.regularMarketPrice ?? meta.chartPreviousClose ?? 0;
-        const prevClose: number = meta.chartPreviousClose ?? meta.previousClose ?? price;
-        const change = price - prevClose;
-        const changePct = prevClose > 0 ? (change / prevClose) * 100 : 0;
-
-        results[ticker] = {
-          ticker,
-          price: +price.toFixed(4),
-          prevClose: +prevClose.toFixed(4),
-          change: +change.toFixed(4),
-          changePct: +changePct.toFixed(2),
-          currency: meta.currency ?? 'USD',
-          marketState: meta.marketState ?? 'CLOSED',
-          timestamp: Date.now(),
-        };
-      } catch {
-        // swallow — caller keeps stale price
+    try {
+      const url = `${YF_BASE}/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1m&range=1d&includePrePost=false`;
+      const res = await fetch(proxied(proxy, url), {
+        headers: { Accept: 'application/json' },
+      });
+      
+      if (res.status === 429) {
+        console.warn(`Yahoo Finance rate limited on ${ticker}, waiting 1s...`);
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue; // Skip this one for now, we'll get it next poll
       }
-    })
-  );
+      
+      if (!res.ok) continue;
+      
+      const json = await res.json();
+      const meta = json?.chart?.result?.[0]?.meta;
+      if (!meta) continue;
+
+      const price: number = meta.regularMarketPrice ?? meta.chartPreviousClose ?? 0;
+      const prevClose: number = meta.chartPreviousClose ?? meta.previousClose ?? price;
+      const change = price - prevClose;
+      const changePct = prevClose > 0 ? (change / prevClose) * 100 : 0;
+
+      const quoteData = {
+        ticker,
+        price: +price.toFixed(4),
+        prevClose: +prevClose.toFixed(4),
+        change: +change.toFixed(4),
+        changePct: +changePct.toFixed(2),
+        currency: meta.currency ?? 'USD',
+        marketState: meta.marketState ?? 'CLOSED',
+        timestamp: Date.now(),
+      };
+
+      results[ticker] = quoteData;
+      quoteCache[ticker] = { data: quoteData, timestamp: Date.now() };
+
+      // Add a small delay to avoid hitting the rate limit
+      await new Promise(resolve => setTimeout(resolve, 300));
+    } catch (err) {
+      // swallow — caller keeps stale price
+    }
+  }
 
   return results;
 }

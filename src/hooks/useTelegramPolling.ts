@@ -16,15 +16,16 @@
  * Poll: 5 s   |   Scheduled checks: every 60 s
  */
 import { useEffect, useRef } from 'react';
-import { useStore, usePortfolioSummary } from '../store';
+import { useStore, usePortfolioSummary, useAllTransactions } from '../store';
 import { useSettings } from '../store/settingsStore';
 import {
   getUpdatesPolling, sendMessage, sendReplyKeyboard, sendInlineKeyboard,
-  answerCallbackQuery, editMessageText, sendPhoto,
+  answerCallbackQuery, editMessageText, sendPhoto, testBot,
 } from '../lib/telegram';
 import { capturePortfolioChart } from '../utils/capturePortfolioChart';
 import { nanoid } from '../utils/nanoid';
 import { currentMonthKey } from '../utils/format';
+import { toast } from 'react-hot-toast';
 
 const POLL_MS  = 5_000;
 const CHECK_MS = 60_000;
@@ -80,11 +81,12 @@ export function useTelegramPolling() {
   const store        = useStore();
   const portfolioRef = usePortfolioSummary();
   const settings     = useSettings();
+  const allTransactions = useAllTransactions();
 
   // handleText / handleCallback are stored here so poll() always calls
   // the latest version — avoids stale-closure bugs after HMR or re-renders.
   const liveRef = useRef({
-    store, portfolioRef, settings,
+    store, portfolioRef, settings, allTransactions,
     conv:               { step: 'idle' } as ConvStep,
     sentConfirmations:  new Set<string>(),
     sentPendingAlerts:  new Set<string>(),
@@ -97,18 +99,19 @@ export function useTelegramPolling() {
   liveRef.current.store        = store;
   liveRef.current.portfolioRef = portfolioRef;
   liveRef.current.settings     = settings;
+  liveRef.current.allTransactions = allTransactions;
 
   // ── sendMenu — uses Reply Keyboard (no callbacks, persists at bottom) ──────
 
   async function sendMenu(tk: string, cid: string) {
-    const { store: { recurring, transactions } } = liveRef.current;
+    const { store: { recurring }, allTransactions } = liveRef.current;
     const today   = new Date().getDate();
     const upcoming = recurring.filter((r) => {
       if (!r.active) return false;
       const d = r.dayOfMonth - today;
       return d >= 0 && d <= 7;
     }).length;
-    const pend = transactions.filter((t) => t.pending && !t.isVirtual).length;
+    const pend = allTransactions.filter((t) => t.isVirtual).length;
 
     await sendReplyKeyboard(tk, cid,
       '🤖 בחר פעולה:',
@@ -426,8 +429,8 @@ export function useTelegramPolling() {
     if (t.includes('ממתינות')) {
       liveRef.current.conv = { step: 'idle' };
       try {
-        const pendNow = (liveRef.current.store?.transactions ?? []).filter(
-          (x) => x.pending && !x.isVirtual
+        const pendNow = liveRef.current.allTransactions.filter(
+          (x) => x.isVirtual
         );
         if (pendNow.length === 0) {
           await sendMessage(tk, cid, '✅ אין עסקאות ממתינות לאישור.');
@@ -574,10 +577,23 @@ export function useTelegramPolling() {
         await sendMessage(tk, cid, '⚠️ סכום לא תקין. /cancel לביטול');
         return;
       }
-      const txn = transactions.find((x) => x.id === txnId);
-      if (txn) {
-        updateTransaction(txnId, { amount, pending: false });
-        await sendMessage(tk, cid, `✅ עודכן: <b>${txn.business}</b> — ₪${amount.toLocaleString('he-IL')}`);
+      
+      if (txnId.startsWith('virt-')) {
+        const txn = liveRef.current.allTransactions.find(x => x.id === txnId);
+        if (txn) {
+          const monthKey = txnId.slice(-7);
+          const recurringId = txnId.slice(5, -8);
+          const realId = nanoid();
+          addTransactions([{ ...txn, id: realId, amount, isVirtual: false }]);
+          setRecurringOccurrence(recurringId, monthKey, { amount, transactionId: realId });
+          await sendMessage(tk, cid, `✅ עודכן ונשמר: <b>${txn.business}</b> — ₪${amount.toLocaleString('he-IL')}`);
+        }
+      } else {
+        const txn = transactions.find((x) => x.id === txnId);
+        if (txn) {
+          updateTransaction(txnId, { amount, pending: false });
+          await sendMessage(tk, cid, `✅ עודכן: <b>${txn.business}</b> — ₪${amount.toLocaleString('he-IL')}`);
+        }
       }
       await sendMenu(tk, cid);
       return;
@@ -739,6 +755,56 @@ export function useTelegramPolling() {
       return;
     }
 
+    // ── Virtual transaction actions ─────────────────────────────────────────
+    if (data.startsWith('v_ok:')) {
+      const txnId = data.slice(5);
+      const txn = liveRef.current.allTransactions.find(t => t.id === txnId);
+      await answerCallbackQuery(tk, queryId, txn ? '✅ אושר' : 'לא נמצא');
+      if (txn) {
+        const monthKey = txnId.slice(-7);
+        const recurringId = txnId.slice(5, -8);
+        const existing = transactions.find(
+          (x) => !x.isVirtual && x.date === txn.date && x.business === txn.business && x.amount === txn.amount,
+        );
+        if (existing) {
+          updateTransaction(existing.id, { recurringId, isRecurring: true });
+          setRecurringOccurrence(recurringId, monthKey, { transactionId: existing.id });
+        } else {
+          const realId = nanoid();
+          addTransactions([{ ...txn, id: realId, isVirtual: false }]);
+          setRecurringOccurrence(recurringId, monthKey, { transactionId: realId });
+        }
+        if (msgId) await editMessageText(tk, cid, msgId,
+          `✅ <b>${escHtml(txn.business)}</b> — ₪${txn.amount.toLocaleString('he-IL')} אושר`);
+      }
+      await sendMenu(tk, cid);
+      return;
+    }
+    if (data.startsWith('v_edit:')) {
+      const txnId = data.slice(7);
+      const txn = liveRef.current.allTransactions.find(t => t.id === txnId);
+      await answerCallbackQuery(tk, queryId);
+      if (txn) {
+        liveRef.current.conv = { step: 'edit_amount', txnId };
+        await sendMessage(tk, cid, `✏️ <b>${escHtml(txn.business)}</b> (חיוב קבוע)\nמה הסכום הנכון?\n\n/cancel לביטול`);
+      }
+      return;
+    }
+    if (data.startsWith('v_dismiss:')) {
+      const txnId = data.slice(10);
+      const txn = liveRef.current.allTransactions.find(t => t.id === txnId);
+      await answerCallbackQuery(tk, queryId, txn ? '🗑️ הוסר' : 'לא נמצא');
+      if (txn) {
+        const monthKey = txnId.slice(-7);
+        const recurringId = txnId.slice(5, -8);
+        setRecurringOccurrence(recurringId, monthKey, { dismissed: true });
+        if (msgId) await editMessageText(tk, cid, msgId,
+          `🗑️ <b>${escHtml(txn.business)}</b> הוסר מהממתינים`);
+      }
+      await sendMenu(tk, cid);
+      return;
+    }
+
     // ── Pending transaction actions ───────────────────────────────────────
     if (data.startsWith('txn_ok:')) {
       const txnId = data.slice(7);
@@ -862,8 +928,8 @@ export function useTelegramPolling() {
   // ── checkPendingTransactions ──────────────────────────────────────────────
 
   async function checkPendingTransactions(tk: string, cid: string, force = false) {
-    const { store: { transactions }, sentPendingAlerts } = liveRef.current;
-    const pending = transactions.filter((t) => t.pending && !t.isVirtual);
+    const { allTransactions, sentPendingAlerts } = liveRef.current;
+    const pending = allTransactions.filter((t) => t.isVirtual);
 
     if (pending.length === 0) {
       if (force) await sendMessage(tk, cid, '✅ אין עסקאות ממתינות לאישור.');
@@ -881,13 +947,13 @@ export function useTelegramPolling() {
       sentPendingAlerts.add(key);
 
       const d   = new Date(txn.date).toLocaleDateString('he-IL', { day: '2-digit', month: '2-digit' });
-      const txt = `⏳ <b>ממתין לאישור</b>\n\n📅 ${d}\n🏪 <b>${escHtml(txn.business)}</b>\n💰 ₪${txn.amount.toLocaleString('he-IL')}\n📂 ${escHtml(txn.category)}`;
+      const txt = `⏳ <b>חיוב קבוע ממתין לאישור</b>\n\n📅 ${d}\n🏪 <b>${escHtml(txn.business)}</b>\n💰 ₪${txn.amount.toLocaleString('he-IL')}\n📂 ${escHtml(txn.category)}`;
 
       const msgId = await sendInlineKeyboard(tk, cid, txt,
         [[
-          { text: '✅ אשר',      callback_data: `txn_ok:${txn.id}` },
-          { text: '✏️ שנה סכום', callback_data: `txn_edit:${txn.id}` },
-          { text: '🗑️ מחק',      callback_data: `txn_del_pend:${txn.id}` },
+          { text: '✅ אשר',      callback_data: `v_ok:${txn.id}` },
+          { text: '✏️ שנה סכום', callback_data: `v_edit:${txn.id}` },
+          { text: '🗑️ התעלם',    callback_data: `v_dismiss:${txn.id}` },
         ]],
       );
 
@@ -895,7 +961,7 @@ export function useTelegramPolling() {
       if (!msgId) {
         await sendMessage(tk, cid,
           `⏳ ממתין: ${escHtml(txn.business)} — ₪${txn.amount.toLocaleString('he-IL')} (${escHtml(txn.category)})\n` +
-          `שלח /approve_${txn.id.slice(0, 8)} לאישור`
+          `אנא אשר דרך ממשק האתר.`
         );
       }
     }
@@ -994,9 +1060,40 @@ export function useTelegramPolling() {
     if (!telegramPollingEnabled || !tk || !cid) return;
 
     let running = true;
+    let pollTimeout: ReturnType<typeof setTimeout>;
+    let scheduledTimer: ReturnType<typeof setInterval>;
 
-    // Welcome + keyboard on first enable
-    sendMessage(tk, cid, '🤖 <b>פינסטאר מחובר!</b>').then(() => sendMenu(tk, cid));
+    async function init() {
+      const testRes = await testBot(tk);
+      if (!running) return;
+      if (!testRes.ok) {
+        toast.error('שגיאת התחברות לטלגרם: הטוקן אינו תקין. הסנכרון הופסק.');
+        liveRef.current.settings.update({ telegramPollingEnabled: false });
+        return;
+      }
+
+      sendMessage(tk, cid, '🤖 <b>פינסטאר מחובר!</b>').then(() => sendMenu(tk, cid));
+
+      pollNext();
+      scheduledTimer = setInterval(scheduled, CHECK_MS);
+
+      checkRecurring(tk, cid);
+      checkPendingTransactions(tk, cid);
+    }
+    init();
+
+    async function pollNext() {
+      if (!running) return;
+      try {
+        await poll();
+      } catch (e) {
+        console.error('[Telegram Polling] Error during poll:', e);
+      } finally {
+        if (running) {
+          pollTimeout = setTimeout(pollNext, POLL_MS);
+        }
+      }
+    }
 
     // ── Poll ──────────────────────────────────────────────────────────────
     async function poll() {
@@ -1005,13 +1102,31 @@ export function useTelegramPolling() {
         settings: { lastTelegramUpdateId, telegramChatId: liveCid, telegramBotToken: liveTk },
       } = liveRef.current;
 
-      const updates = await getUpdatesPolling(liveTk, lastTelegramUpdateId + 1);
+      let updates: any[] = [];
+      try {
+        updates = await getUpdatesPolling(liveTk, lastTelegramUpdateId + 1);
+      } catch (err: any) {
+        if (err?.message === '401_UNAUTHORIZED') {
+          toast.error('שגיאת התחברות לטלגרם: הטוקן אינו תקין. סנכרון הופסק.');
+          liveRef.current.settings.update({ telegramPollingEnabled: false });
+          return;
+        }
+      }
+
       if (!running || !updates.length) return;
 
       let maxId = lastTelegramUpdateId;
-
       for (const upd of updates) {
         if (upd.update_id > maxId) maxId = upd.update_id;
+      }
+
+      // Update maxId immediately so parallel requests (if any) won't fetch the same updates.
+      if (maxId > lastTelegramUpdateId) {
+        liveRef.current.settings.update({ lastTelegramUpdateId: maxId });
+      }
+
+      for (const upd of updates) {
+        if (!running) break;
 
         // ── Text messages ────────────────────────────────────────────────
         if (upd.message?.text) {
@@ -1033,15 +1148,11 @@ export function useTelegramPolling() {
           }
           // Always call via liveRef so we use the latest function (no stale closure)
           const qid = upd.callback_query.id;
-          liveRef.current.handleCallback!(qid, upd.callback_query.data, upd.callback_query.message?.message_id, liveTk, liveCid)
+          await liveRef.current.handleCallback!(qid, upd.callback_query.data, upd.callback_query.message?.message_id, liveTk, liveCid)
             .catch(async () => {
               try { await answerCallbackQuery(liveTk, qid, '⚠️ שגיאה'); } catch { /* silent */ }
             });
         }
-      }
-
-      if (maxId > lastTelegramUpdateId) {
-        liveRef.current.settings.update({ lastTelegramUpdateId: maxId });
       }
     }
 
@@ -1058,15 +1169,9 @@ export function useTelegramPolling() {
       await checkMonthlySummary(t, c);
     }
 
-    const pollTimer      = setInterval(poll, POLL_MS);
-    const scheduledTimer = setInterval(scheduled, CHECK_MS);
-
-    checkRecurring(tk, cid);
-    checkPendingTransactions(tk, cid);
-
     return () => {
       running = false;
-      clearInterval(pollTimer);
+      clearTimeout(pollTimeout);
       clearInterval(scheduledTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

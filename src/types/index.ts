@@ -8,6 +8,36 @@ export interface CategoryDef {
   isBuiltIn: boolean;
 }
 
+export interface AiSuggestion {
+  category: Category;
+  confidence?: number;
+  originalCategory?: Category;
+}
+
+export interface AiBatchRecommendations {
+  toDelete: { transactionId: string; reason: string }[];
+  toLink: { transactionId: string; recurringId: string; reason: string }[];
+  categorizations: Record<string, { category: Category; confidence: number }>;
+  incomesToDelete?: { incomeId: string; reason: string }[];
+  incomeCategorizations?: Record<string, IncomeEntry['type']>;
+  log?: any;
+}
+
+export interface TransactionMetadata {
+  identifier?: string | number;
+  processedDate?: string;
+  originalAmount?: number;
+  originalCurrency?: string;
+  chargedAmount?: number;
+  chargedCurrency?: string;
+  status?: string;
+  memo?: string;
+  installments?: {
+    number: number;
+    total: number;
+  };
+}
+
 export interface Transaction {
   id: string;
   date: string;
@@ -21,8 +51,13 @@ export interface Transaction {
   pending: boolean;
   categoryOverride?: Category;
   aiCategorized: boolean;
+  aiProcessed?: boolean; // whether this has been through the batch AI recommendations (delete/link) pipeline
+  aiRecommendation?: string; // specific recommendation text for this transaction (e.g. "Delete duplicate", "Link to recurring")
+  aiLog?: { prompt: string; response: string }; // stores the batch prompt/response for this transaction
+  aiConfidence?: number; // confidence score (0-100) from AI categorization
   recurringId?: string;  // links this transaction to a RecurringCharge occurrence
   isVirtual?: boolean;   // true = synthesised from recurring charge, not persisted
+  metadata?: TransactionMetadata; // additional raw data from bank scraper
 }
 
 /** Per-month override for a single recurring charge occurrence */
@@ -176,26 +211,69 @@ export interface Alert {
   date: string;
 }
 
+export interface BankLoginField {
+  name: string;
+  label: string;
+  type: 'text' | 'password';
+}
+
+export interface BankCompanyMeta {
+  id: string;
+  name: string;
+  originalName: string;
+  loginFields: BankLoginField[];
+}
+
+export interface SyncLog {
+  date: string;
+  status: 'success' | 'error';
+  txnCount?: number;
+  errorMessage?: string;
+}
+
+export interface BankAccountConfig {
+  id: string;
+  companyId: string;         // e.g. 'leumi', 'visaCal'
+  companyName: string;       // Hebrew display name
+  nickname: string;          // user-defined nickname
+  credentials: Record<string, string>; // dynamic per company
+  lastSync?: string;         // ISO date string
+  lastSyncStatus?: 'success' | 'error';
+  lastSyncError?: string;
+  lastSyncTxnCount?: number; // how many transactions were imported
+  syncLogs?: SyncLog[];      // history of syncs
+}
+
 // Static built-in palette — used for initialization only; runtime colors come from the store
 export const CATEGORY_COLORS: Record<string, string> = {
-  'מזון וסופרמרקט': '#22c55e',
-  'מסעדות וקפה': '#f97316',
-  'תחבורה': '#3b82f6',
   'דיור': '#0891b2',
-  'שירותים': '#ef4444',
-  'תקשורת': '#8b5cf6',
+  'חשבונות שוטפים': '#ef4444',
+  'ביטוחים': '#6b7280',
+  'רכב - אנרגיה': '#f59e0b',
+  'רכב - תחזוקה': '#f97316',
+  'מזון וסופרמרקט': '#22c55e',
+  'מסעדות וקפה': '#fbbf24',
+  'בריאות ופארם': '#ec4899',
+  'קניות כלליות': '#d97706',
+  'קניות אונליין': '#f472b6',
+  'חינוך ואקדמיה': '#166534',
+  'העשרה והסמכות': '#0ea5e9',
+  'תוכנה ושירותי ענן': '#6366f1',
   'מנויים ובידור': '#7c3aed',
-  'בריאות': '#ec4899',
-  'קניות': '#d97706',
-  'ביטוח': '#6b7280',
-  'חינוך': '#166534',
-  'ממשלתי': '#374151',
-  'אחר': '#9ca3af',
+  'תחביבים ופרויקטים אישיים': '#a855f7',
+  'חופשות וטיולים': '#14b8a6',
+  'מתנות ואירועים': '#f43f5e',
+  'חיסכון והשקעות': '#84cc16',
+  'ממשלתי ופיננסי': '#374151',
+  'אחר (בלתי מתוכנן)': '#9ca3af',
 };
 
 // Static ordered list — used for store initialization only
 export const ALL_CATEGORIES: string[] = [
-  'מזון וסופרמרקט', 'מסעדות וקפה', 'תחבורה', 'דיור',
-  'שירותים', 'תקשורת', 'מנויים ובידור', 'בריאות',
-  'קניות', 'ביטוח', 'חינוך', 'ממשלתי', 'אחר',
+  'דיור', 'חשבונות שוטפים', 'ביטוחים',
+  'רכב - אנרגיה', 'רכב - תחזוקה',
+  'מזון וסופרמרקט', 'מסעדות וקפה', 'בריאות ופארם', 'קניות כלליות', 'קניות אונליין',
+  'חינוך ואקדמיה', 'העשרה והסמכות', 'תוכנה ושירותי ענן',
+  'מנויים ובידור', 'תחביבים ופרויקטים אישיים', 'חופשות וטיולים', 'מתנות ואירועים',
+  'חיסכון והשקעות', 'ממשלתי ופיננסי', 'אחר (בלתי מתוכנן)'
 ];

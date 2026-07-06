@@ -1,13 +1,33 @@
-import { useState } from 'react';
-import { Bot, TrendingUp, Bell, CheckCircle, XCircle, Loader2, AlertTriangle, Camera } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { Bot, TrendingUp, Bell, CheckCircle, XCircle, Loader2, AlertTriangle, Camera, Building2, CheckCircle2, Save, Check, Receipt, CalendarRange, Landmark, Wallet, PiggyBank, Target, Book, Tag, Cog, Sparkles, HandCoins, Building, RefreshCw } from 'lucide-react';
 import { useSettings } from '../store/settingsStore';
 import { useStore, usePortfolioSummary } from '../store';
+import { manualSyncExchangeRate } from '../hooks/useExchangeRateSync';
 import Card from '../components/common/Card';
+import BankAccounts from '../components/common/BankAccounts';
 import { testBot, getUpdates, sendMessage, sendPhoto } from '../lib/telegram';
 import { fetchQuotes } from '../lib/yahooFinance';
 import { capturePortfolioChart } from '../utils/capturePortfolioChart';
+import toast from 'react-hot-toast';
 
-type Tab = 'stocks' | 'telegram' | 'notifications' | 'data';
+type Tab = 'banks' | 'stocks' | 'telegram' | 'notifications' | 'data';
+
+const DATA_KEYS = [
+  { key: 'transactions', label: 'עסקאות והוצאות', icon: Receipt },
+  { key: 'recurring', label: 'חיובים קבועים', icon: CalendarRange },
+  { key: 'lots', label: 'מניות ותיק השקעות', icon: TrendingUp },
+  { key: 'savings', label: 'פיקדונות', icon: Landmark },
+  { key: 'gemel', label: 'קופות גמל', icon: PiggyBank },
+  { key: 'pension', label: 'פנסיה', icon: Building },
+  { key: 'income', label: 'הכנסות', icon: HandCoins },
+  { key: 'goals', label: 'יעדים ותקציב', icon: Target },
+  { key: 'journal', label: 'יומן פיננסי', icon: Book },
+  { key: 'categories', label: 'קטגוריות', icon: Tag },
+  { key: 'categoryRules', label: 'כללי קטגוריות אוטומטיות', icon: Cog },
+  { key: 'aiRecommendations', label: 'המלצות AI', icon: Sparkles },
+  { key: 'settings', label: 'הגדרות כלליות', icon: Cog },
+] as const;
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -30,10 +50,25 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 
 export default function Settings() {
   const s = useSettings();
-  const { resetAllData, usdIls, setUsdIls, lots } = useStore();
+  const { resetAllData, resetDataPartial, usdIls, usdIlsLastUpdate, setUsdIls, lots } = useStore();
   const { rows: portfolioRows } = usePortfolioSummary();
   const [capturingChart, setCapturingChart] = useState(false);
   const [chartSendStatus, setChartSendStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
+
+  // Modals state
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportSelection, setExportSelection] = useState<Record<string, boolean>>(
+    Object.fromEntries(DATA_KEYS.map(k => [k.key, true]))
+  );
+  
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [parsedImportData, setParsedImportData] = useState<any>(null);
+  const [importSelection, setImportSelection] = useState<Record<string, boolean>>({});
+
+  const [showResetModal, setShowResetModal] = useState(false);
+  const [resetSelection, setResetSelection] = useState<Record<string, boolean>>(
+    Object.fromEntries(DATA_KEYS.map(k => [k.key, true]))
+  );
 
   async function sendChartNow() {
     if (portfolioRows.length === 0 || !s.telegramBotToken || !s.telegramChatId) return;
@@ -50,13 +85,116 @@ export default function Settings() {
       setCapturingChart(false);
     }
   }
-  const [tab, setTab] = useState<Tab>('stocks');
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [tab, setTab] = useState<Tab>((searchParams.get('tab') as Tab) || 'banks');
+  const [usdSyncLoading, setUsdSyncLoading] = useState(false);
+
+  useEffect(() => {
+    const queryTab = searchParams.get('tab') as Tab;
+    if (queryTab && ['banks', 'stocks', 'telegram', 'notifications', 'data'].includes(queryTab)) {
+      setTab(queryTab);
+    }
+  }, [searchParams]);
+
+  const handleTabChange = (newTab: Tab) => {
+    setTab(newTab);
+    setSearchParams({ tab: newTab });
+  };
+
   const [resetConfirm, setResetConfirm] = useState('');
   const [tgStatus, setTgStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
   const [tgBotName, setTgBotName] = useState('');
   const [stockTestStatus, setStockTestStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'success'>('idle');
+
+  async function handleSaveConfig() {
+    setSaveStatus('saving');
+    try {
+      const apiUrl = typeof window === 'undefined' ? 'http://localhost:3002/api/settings' : '/api/settings';
+      const res = await fetch(apiUrl);
+      if (res.ok) {
+        setSaveStatus('success');
+        setTimeout(() => setSaveStatus('idle'), 3000);
+      } else {
+        toast.error('שגיאה באימות השמירה מול השרת');
+        setSaveStatus('idle');
+      }
+    } catch (err: any) {
+      toast.error(`שגיאה בחיבור לשרת: ${err.message}`);
+      setSaveStatus('idle');
+    }
+  }
+
+  // ── Testing states ────────────────────────────────────────────────────────
+  const [isTesting, setIsTesting] = useState(false);
+  const [testResult, setTestResult] = useState<'success' | 'error' | null>(null);
+
+  const handleTestLLM = async () => {
+    if (!s.llmApiKey) return;
+    setIsTesting(true);
+    setTestResult(null);
+    try {
+      if (s.llmProvider === 'gemini') {
+        const modelString = s.llmModel || 'gemini-flash-latest';
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelString}:generateContent?key=${s.llmApiKey}`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: "ping" }] }],
+            generationConfig: { maxOutputTokens: 5 }
+          })
+        });
+        if (!res.ok) {
+          let extraInfo = '';
+          if (res.status === 404) {
+            // Try fetching available models to help user
+            try {
+              const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${s.llmApiKey}`);
+              if (listRes.ok) {
+                const listData = await listRes.json();
+                const models = listData.models
+                  ?.filter((m: any) => m.supportedGenerationMethods?.includes("generateContent"))
+                  .map((m: any) => m.name.replace('models/', '')) || [];
+                extraInfo = `\n\nהמודלים שזמינים עבור המפתח שלך:\n${models.join(', ')}`;
+              }
+            } catch (e) { }
+          }
+          const errData = await res.json().catch(() => ({}));
+          toast.error(`Gemini API Error: ${res.status} ${res.statusText}\n${JSON.stringify(errData)}${extraInfo}`);
+        }
+        setTestResult(res.ok ? 'success' : 'error');
+      } else {
+        const modelString = s.llmModel || 'gpt-4o-mini';
+        const url = `https://api.openai.com/v1/chat/completions`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${s.llmApiKey}`
+          },
+          body: JSON.stringify({
+            model: modelString,
+            messages: [{ role: 'user', content: "ping" }],
+            max_tokens: 5,
+          })
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          toast.error(`OpenAI API Error: ${res.status} ${res.statusText}\n${JSON.stringify(errData)}`);
+        }
+        setTestResult(res.ok ? 'success' : 'error');
+      }
+    } catch (err: any) {
+      toast.error(`Network Error: ${err.message}`);
+      setTestResult('error');
+    } finally {
+      setIsTesting(false);
+    }
+  };
 
   const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
+    { key: 'banks', label: 'חשבונות בנק', icon: <Building2 size={15} /> },
     { key: 'stocks', label: 'מניות ו-API', icon: <TrendingUp size={15} /> },
     { key: 'telegram', label: 'Telegram בוט', icon: <Bot size={15} /> },
     { key: 'notifications', label: 'התראות', icon: <Bell size={15} /> },
@@ -86,7 +224,11 @@ export default function Settings() {
       s.telegramChatId,
       '✅ <b>פינסטאר</b> — הבוט מחובר ועובד בהצלחה!'
     );
-    alert(ok ? 'הודעת בדיקה נשלחה!' : 'שגיאה בשליחת הודעה. בדוק את ה-Token וה-Chat ID.');
+    if (ok) {
+      toast.success('הודעת בדיקה נשלחה!');
+    } else {
+      toast.error('שגיאה בשליחת הודעה. בדוק את ה-Token וה-Chat ID.');
+    }
   }
 
   // ── Stock API test ────────────────────────────────────────────────────────
@@ -114,7 +256,7 @@ export default function Settings() {
         {tabs.map(({ key, label, icon }) => (
           <button
             key={key}
-            onClick={() => setTab(key)}
+            onClick={() => handleTabChange(key)}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
               tab === key ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
             }`}
@@ -124,26 +266,201 @@ export default function Settings() {
         ))}
       </div>
 
+      {/* ── Banks tab ──────────────────────────────────────────────────── */}
+      {tab === 'banks' && (
+        <div className="space-y-5">
+          <BankAccounts />
+
+          <Card className="space-y-5">
+            <Section title="סנכרון ומיון אוטומטי">
+              <Field label="תדירות סנכרון אוטומטי (דקות)" hint="המערכת תסנכרן חשבונות שחסרים נתונים אוטומטית כשהאפליקציה פתוחה.">
+                <input
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={s.autoSyncIntervalMinutes || 60}
+                  onChange={(e) => s.update({ autoSyncIntervalMinutes: +e.target.value })}
+                  className="w-32 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                />
+              </Field>
+
+              <Field label="טווח שאיבה בסנכרון (ימים)" hint="כמה ימים אחורה לשאוב עסקאות בכל פעם שהסנכרון רץ.">
+                <input
+                  type="number"
+                  min={1}
+                  max={365}
+                  value={s.autoSyncDaysBack || 30}
+                  onChange={(e) => s.update({ autoSyncDaysBack: +e.target.value })}
+                  className="w-32 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                />
+              </Field>
+
+              <div className="border-t border-slate-100" />
+
+              <Field label="מנוע בינה מלאכותית (LLM)" hint="משמש לסיווג אוטומטי של בתי עסק שאינם מוכרים למערכת.">
+                <select
+                  value={s.llmProvider || 'gemini'}
+                  onChange={(e) => s.update({ llmProvider: e.target.value as 'gemini' | 'openai' })}
+                  className="w-full sm:w-64 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                >
+                  <option value="gemini">Google Gemini (חינמי מומלץ)</option>
+                  <option value="openai">OpenAI (ChatGPT)</option>
+                </select>
+              </Field>
+
+              <Field label="מפתח API (API Key)" hint={`קבל מפתח מ-${s.llmProvider === 'gemini' ? 'Google AI Studio' : 'OpenAI Platform'}. המפתח נשמר אצלך בדפדפן בלבד.`}>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3">
+                  <input
+                    value={s.llmApiKey || ''}
+                    onChange={(e) => {
+                      s.update({ llmApiKey: e.target.value });
+                      setTestResult(null); // Reset status on key change
+                    }}
+                    className="flex-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono"
+                    placeholder="הזן API Key..."
+                    type="password"
+                  />
+                  <select
+                    value={s.llmModel || (s.llmProvider === 'gemini' ? 'gemini-flash-latest' : 'gpt-4o-mini')}
+                    onChange={e => s.update({ llmModel: e.target.value })}
+                    className="w-48 border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono bg-white"
+                  >
+                    {s.llmProvider === 'gemini' ? (
+                      <>
+                        <option value="gemini-flash-latest">gemini-flash-latest</option>
+                        <option value="gemini-flash-lite-latest">gemini-flash-lite-latest</option>
+                        <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                        <option value="gemini-2.0-flash-lite">gemini-2.0-flash-lite</option>
+                        <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
+                        <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
+                        <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
+                        <option value="gemini-3.5-flash">gemini-3.5-flash</option>
+                      </>
+                    ) : (
+                      <>
+                        <option value="gpt-4o-mini">gpt-4o-mini</option>
+                        <option value="gpt-4o">gpt-4o</option>
+                        <option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
+                      </>
+                    )}
+                  </select>
+                  <button
+                    onClick={handleTestLLM}
+                    disabled={!s.llmApiKey || isTesting}
+                    className="shrink-0 flex items-center justify-center gap-2 px-4 py-2 border border-slate-200 rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors disabled:opacity-50"
+                  >
+                    {isTesting ? <Loader2 size={16} className="animate-spin" /> : "בדוק חיבור"}
+                  </button>
+                  {testResult === 'success' && (
+                    <div className="flex items-center gap-1.5 text-green-600 bg-green-50 px-3 py-2 rounded-lg text-sm shrink-0">
+                      <CheckCircle2 size={16} /> מחובר
+                    </div>
+                  )}
+                  {testResult === 'error' && (
+                    <div className="flex items-center gap-1.5 text-red-600 bg-red-50 px-3 py-2 rounded-lg text-sm shrink-0">
+                      <XCircle size={16} /> שגיאה
+                    </div>
+                  )}
+                </div>
+              </Field>
+
+              {s.llmProvider === 'gemini' && (
+                <>
+                  <Field label="מפתח API גיבוי 1 (Backup Key 1)" hint="מפתח גיבוי למקרה של מגבלת קצב (Rate Limit) במפתח הראשי.">
+                    <input
+                      value={s.llmApiKey2 || ''}
+                      onChange={(e) => s.update({ llmApiKey2: e.target.value })}
+                      className="w-full max-w-lg border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono"
+                      placeholder="הזן מפתח גיבוי 1..."
+                      type="password"
+                    />
+                  </Field>
+                  <Field label="מפתח API גיבוי 2 (Backup Key 2)" hint="מפתח גיבוי שני למקרה ששני המפתחות הקודמים הגיעו למגבלת קצב.">
+                    <input
+                      value={s.llmApiKey3 || ''}
+                      onChange={(e) => s.update({ llmApiKey3: e.target.value })}
+                      className="w-full max-w-lg border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono"
+                      placeholder="הזן מפתח גיבוי 2..."
+                      type="password"
+                    />
+                  </Field>
+                </>
+              )}
+
+              <Field label="סף ביטחון לסיווג אוטומטי (%)" hint="עסקאות שהבינה המלאכותית מזהה בביטחון נמוך מהסף הזה יועברו לסטטוס 'ממתינים לשיוך' ולא יסווגו אוטומטית.">
+                <div className="flex items-center gap-4 max-w-sm">
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value={s.aiConfidenceThreshold ?? 80}
+                    onChange={(e) => s.update({ aiConfidenceThreshold: parseInt(e.target.value, 10) })}
+                    className="flex-1 accent-indigo-500"
+                  />
+                  <span className="text-sm font-medium text-slate-700 w-12 text-left">{s.aiConfidenceThreshold ?? 80}%</span>
+                </div>
+              </Field>
+            </Section>
+          </Card>
+        </div>
+      )}
+
       {/* ── Stocks tab ─────────────────────────────────────────────────── */}
       {tab === 'stocks' && (
         <Card className="space-y-5">
           <Section title="שער המרה">
-            <Field label='שער דולר-שקל (1$ = ₪ כמה?)' hint="משפיע על כל ההמרות באתר — תיק מניות, לוח בקרה וכו׳. הזן שער עדכני לפי מקור רשמי.">
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-slate-500">1$ =</span>
-                <input
-                  type="number"
-                  min={1}
-                  max={20}
-                  step={0.01}
-                  value={usdIls}
-                  onChange={(e) => {
-                    const v = parseFloat(e.target.value);
-                    if (!isNaN(v) && v > 0) setUsdIls(v);
-                  }}
-                  className="w-28 border border-slate-200 rounded-lg px-3 py-2 text-sm"
-                />
-                <span className="text-sm text-slate-500">₪</span>
+            <Field label='שער דולר-שקל (1$ = ₪ כמה?)' hint="משפיע על כל ההמרות באתר — תיק מניות, לוח בקרה וכו׳. הזן שער עדכני או סנכרן אוטומטית.">
+              <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-slate-500">1$ =</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={20}
+                    step={0.01}
+                    value={usdIls}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value);
+                      if (!isNaN(v) && v > 0) setUsdIls(v);
+                    }}
+                    className="w-28 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                  />
+                  <span className="text-sm text-slate-500">₪</span>
+                </div>
+                
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={async () => {
+                      setUsdSyncLoading(true);
+                      const rate = await manualSyncExchangeRate(s.corsProxy);
+                      setUsdSyncLoading(false);
+                      if (rate) {
+                        setUsdIls(rate);
+                        toast.success(`שער הדולר עודכן בהצלחה ל-₪${rate.toFixed(2)}`);
+                      } else {
+                        toast.error('שגיאה בסנכרון שער הדולר');
+                      }
+                    }}
+                    disabled={usdSyncLoading}
+                    className="flex items-center gap-1.5 px-3 py-2 bg-blue-50 text-blue-600 rounded-xl text-xs font-semibold hover:bg-blue-100 transition-colors disabled:opacity-50"
+                  >
+                    {usdSyncLoading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                    סנכרן שער
+                  </button>
+
+                  {usdIlsLastUpdate && (
+                    <span className="text-xs text-slate-400">
+                      עדכון אחרון: {new Date(usdIlsLastUpdate).toLocaleDateString('he-IL', {
+                        day: '2-digit',
+                        month: '2-digit',
+                        year: '2-digit',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })}
+                    </span>
+                  )}
+                </div>
               </div>
             </Field>
           </Section>
@@ -248,6 +565,15 @@ export default function Settings() {
             </Field>
 
             <div className="flex gap-3 flex-wrap">
+              <button
+                onClick={() => {
+                  s.update({ telegramBotToken: s.telegramBotToken, telegramChatId: s.telegramChatId });
+                  toast.success('הגדרות טלגרם נשמרו למערכת בהצלחה!');
+                }}
+                className="px-4 py-2 bg-slate-900 text-white rounded-xl text-sm hover:bg-slate-800"
+              >
+                שמור הגדרות לשרת
+              </button>
               <button
                 onClick={testTelegram}
                 disabled={!s.telegramBotToken || tgStatus === 'loading'}
@@ -613,28 +939,7 @@ export default function Settings() {
               <p className="text-sm text-slate-500">ייצוא וייבוא כל הנתונים כקובץ JSON מקומי</p>
               <div className="flex gap-3">
                 <button
-                  onClick={() => {
-                    const state = useStore.getState();
-                    const data = JSON.stringify({
-                      transactions: state.transactions,
-                      recurring: state.recurring,
-                      lots: state.lots,
-                      savings: state.savings,
-                      gemel: state.gemel,
-                      pension: state.pension,
-                      income: state.income,
-                      goals: state.goals,
-                      journal: state.journal,
-                      categories: state.categories,
-                    }, null, 2);
-                    const blob = new Blob([data], { type: 'application/json' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `finstar-backup-${new Date().toISOString().slice(0, 10)}.json`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                  }}
+                  onClick={() => setShowExportModal(true)}
                   className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-xl text-sm hover:bg-slate-700"
                 >
                   ייצא JSON
@@ -653,13 +958,23 @@ export default function Settings() {
                       reader.onload = (event) => {
                         try {
                           const parsed = JSON.parse(event.target?.result as string);
-                          useStore.setState((state) => ({ ...state, ...parsed }));
-                          alert('הנתונים יובאו בהצלחה!');
+                          setParsedImportData(parsed);
+                          
+                          // Auto-select all available keys in the parsed data that match our valid keys
+                          const sel: Record<string, boolean> = {};
+                          DATA_KEYS.forEach(k => {
+                            if (parsed[k.key] !== undefined) sel[k.key] = true;
+                          });
+                          setImportSelection(sel);
+                          
+                          setShowImportModal(true);
                         } catch (err) {
-                          alert('שגיאה בייבוא הקובץ');
+                          toast.error('שגיאה בייבוא הקובץ');
                         }
                       };
                       reader.readAsText(file);
+                      // Reset file input so same file can be selected again
+                      e.target.value = '';
                     }}
                   />
                 </label>
@@ -694,19 +1009,299 @@ export default function Settings() {
                 />
               </div>
 
-              <button
-                disabled={resetConfirm !== 'אפס'}
-                onClick={() => {
-                  resetAllData();
-                  setResetConfirm('');
-                  alert('כל הנתונים אופסו. הקטגוריות נשמרו.');
-                }}
-                className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-xl text-sm hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <AlertTriangle size={14} /> אפס את כל הנתונים
-              </button>
+              <div className="flex gap-4">
+                <button
+                  disabled={resetConfirm !== 'אפס'}
+                  onClick={() => {
+                    resetAllData();
+                    setResetConfirm('');
+                    toast.success('כל הנתונים אופסו. הקטגוריות נשמרו.');
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-xl text-sm hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <AlertTriangle size={14} /> מחיקה מלאה
+                </button>
+                <button
+                  disabled={resetConfirm !== 'אפס'}
+                  onClick={() => {
+                    setShowResetModal(true);
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 bg-white border-2 border-red-200 text-red-600 rounded-xl text-sm hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed font-medium"
+                >
+                  <AlertTriangle size={14} /> מחיקה חלקית
+                </button>
+              </div>
             </Section>
           </Card>
+        </div>
+      )}
+
+      {/* ── Global Save Button ─────────────────────────────────────────── */}
+      <div className="flex justify-end pt-4 border-t border-slate-200 mt-8 mb-4">
+        <button
+          onClick={handleSaveConfig}
+          className={`flex items-center gap-2 px-6 py-2.5 rounded-xl text-sm font-medium transition-colors ${
+            saveStatus === 'success' 
+              ? 'bg-green-500 text-white' 
+              : 'bg-blue-600 text-white hover:bg-blue-700'
+          }`}
+        >
+          {saveStatus === 'saving' ? (
+            <Loader2 size={16} className="animate-spin" />
+          ) : saveStatus === 'success' ? (
+            <Check size={16} />
+          ) : (
+            <Save size={16} />
+          )}
+          {saveStatus === 'success' ? 'נשמר בהצלחה!' : 'שמור הגדרות'}
+        </button>
+      </div>
+
+      {/* ── Export Modal ─────────────────────────────────────────────────── */}
+      {showExportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4" dir="rtl">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 animate-in fade-in zoom-in-95">
+            <h2 className="text-xl font-bold text-slate-800 mb-4">מה לייצא?</h2>
+            <div className="space-y-2 mb-6 max-h-[60vh] overflow-y-auto pl-2">
+              {DATA_KEYS.map(({ key, label }) => {
+                let countText = '';
+                if (key === 'settings') {
+                  countText = '(קובץ הגדרות)';
+                } else if (key === 'categoryRules') {
+                  const store = useStore.getState();
+                  const count = Object.keys(store.categoryRules || {}).length;
+                  countText = `(${count} כללים)`;
+                } else {
+                  const store = useStore.getState();
+                  const items = (store as any)[key];
+                  const count = Array.isArray(items) ? items.length : 0;
+                  countText = `(${count} פריטים)`;
+                }
+                
+                return (
+                  <label key={key} className="flex items-center gap-3 cursor-pointer p-2 hover:bg-slate-50 rounded-lg">
+                    <input
+                      type="checkbox"
+                      checked={exportSelection[key] || false}
+                      onChange={(e) => setExportSelection(s => ({ ...s, [key]: e.target.checked }))}
+                      className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 cursor-pointer"
+                    />
+                    <div className="flex-1 flex justify-between items-center">
+                      <span className="font-medium text-slate-700">{label}</span>
+                      <span className="text-sm text-slate-500 mr-2">{countText}</span>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+            
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowExportModal(false)}
+                className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-xl transition-colors font-medium"
+              >
+                ביטול
+              </button>
+              <button
+                onClick={() => {
+                  const state = useStore.getState() as any;
+                  const dataToExport: any = {};
+                  
+                  DATA_KEYS.forEach(({ key }) => {
+                    if (exportSelection[key]) {
+                      if (key === 'settings') {
+                        // Exclude sensitive bank credentials from export
+                        const { bankAccounts, ...safeSettings } = useSettings.getState();
+                        dataToExport[key] = safeSettings;
+                      } else if (key === 'categoryRules') {
+                        dataToExport['categoryRules'] = state['categoryRules'];
+                        dataToExport['categoryRulesMeta'] = state['categoryRulesMeta'] || {};
+                      } else {
+                        dataToExport[key] = state[key];
+                      }
+                    }
+                  });
+                  
+                  const data = JSON.stringify(dataToExport, null, 2);
+                  const blob = new Blob([data], { type: 'application/json' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `finstar-backup-${new Date().toISOString().slice(0, 10)}.json`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                  setShowExportModal(false);
+                }}
+                className="px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 rounded-xl transition-colors font-medium"
+              >
+                הורד קובץ
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Import Modal ─────────────────────────────────────────────────── */}
+      {showImportModal && parsedImportData && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4" dir="rtl">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 animate-in fade-in zoom-in-95">
+            <h2 className="text-xl font-bold text-slate-800 mb-2">ייבוא נתונים</h2>
+            <p className="text-sm text-slate-500 mb-4">בחר איזה מידע לייבא (המידע הנבחר ידרוס את הקיים מאותו סוג):</p>
+            
+            <div className="space-y-2 mb-6 max-h-[60vh] overflow-y-auto pl-2">
+              {DATA_KEYS.map(({ key, label }) => {
+                const items = parsedImportData[key];
+                if (items === undefined) return null;
+                
+                let countText = '';
+                if (key === 'settings') {
+                  countText = '(קובץ הגדרות)';
+                } else if (key === 'categoryRules') {
+                  const count = Object.keys(items || {}).length;
+                  countText = `(${count} כללים זוהו)`;
+                } else {
+                  const count = Array.isArray(items) ? items.length : 0;
+                  countText = `(${count} פריטים זוהו)`;
+                }
+                
+                return (
+                  <label key={key} className="flex items-center gap-3 cursor-pointer p-2 hover:bg-slate-50 rounded-lg">
+                    <input
+                      type="checkbox"
+                      checked={importSelection[key] || false}
+                      onChange={(e) => setImportSelection(s => ({ ...s, [key]: e.target.checked }))}
+                      className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 cursor-pointer"
+                    />
+                    <div className="flex-1 flex justify-between items-center">
+                      <span className="font-medium text-slate-700">{label}</span>
+                      <span className="text-sm text-slate-500 mr-2">{countText}</span>
+                    </div>
+                  </label>
+                );
+              })}
+              
+              {Object.keys(importSelection).length === 0 && (
+                <div className="text-sm text-slate-500 text-center py-4 bg-slate-50 rounded-lg border border-slate-100">
+                  לא נמצא מידע נתמך בקובץ. אנא ודא שזהו קובץ גיבוי תקין של המערכת.
+                </div>
+              )}
+            </div>
+            
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => {
+                  setShowImportModal(false);
+                  setParsedImportData(null);
+                }}
+                className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-xl transition-colors font-medium"
+              >
+                ביטול
+              </button>
+              <button
+                disabled={!Object.values(importSelection).some(v => v)}
+                onClick={() => {
+                  const dataToImport: any = {};
+                  DATA_KEYS.forEach(({ key }) => {
+                    if (importSelection[key] && parsedImportData[key] !== undefined) {
+                      if (key === 'settings') {
+                        useSettings.setState(parsedImportData[key]);
+                      } else if (key === 'categoryRules') {
+                        dataToImport['categoryRules'] = parsedImportData['categoryRules'];
+                        dataToImport['categoryRulesMeta'] = parsedImportData['categoryRulesMeta'] || {};
+                      } else {
+                        dataToImport[key] = parsedImportData[key];
+                      }
+                    }
+                  });
+                  
+                  if (Object.keys(dataToImport).length > 0) {
+                    useStore.setState((state) => ({ ...state, ...dataToImport }));
+                  }
+                  toast.success('הנתונים יובאו בהצלחה!');
+                  setShowImportModal(false);
+                  setParsedImportData(null);
+                }}
+                className="px-4 py-2 bg-blue-600 text-white hover:bg-blue-700 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium"
+              >
+                ייבא נתונים נבחרים
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Reset Modal ─────────────────────────────────────────────────── */}
+      {showResetModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-sm p-4" dir="rtl">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-md p-6 animate-in fade-in zoom-in-95">
+            <h2 className="text-xl font-bold text-red-600 mb-2">מחיקה חלקית של נתונים</h2>
+            <p className="text-sm text-slate-500 mb-4">בחר אילו נתונים למחוק (המידע הנבחר ימחק לחלוטין ולא יהיה ניתן לשחזור):</p>
+            
+            <div className="flex justify-between items-center mb-3 text-sm">
+              <button 
+                onClick={() => {
+                  const allKeys = Object.fromEntries(DATA_KEYS.filter(k => k.key !== 'settings').map(k => [k.key, true]));
+                  setResetSelection(allKeys as any);
+                }}
+                className="text-blue-600 font-semibold hover:underline bg-blue-50 px-2 py-1 rounded"
+              >
+                סמן הכל
+              </button>
+              <button 
+                onClick={() => setResetSelection({})}
+                className="text-slate-500 hover:text-slate-700 font-medium hover:underline bg-slate-50 px-2 py-1 rounded"
+              >
+                הסר בחירה מהכל
+              </button>
+            </div>
+            
+            <div className="grid grid-cols-2 gap-3 mb-6 max-h-[60vh] overflow-y-auto pl-2 p-1">
+              {DATA_KEYS.map(({ key, label, icon: Icon }) => {
+                if (key === 'settings') return null; // Can't reset settings easily here, or we could reset useSettings. But let's skip settings for data reset.
+                const isSelected = resetSelection[key] || false;
+                return (
+                  <button 
+                    key={key} 
+                    onClick={() => setResetSelection(s => ({ ...s, [key]: !isSelected }))}
+                    className={`flex flex-col items-center justify-center p-3 text-center border-2 rounded-xl transition-all ${
+                      isSelected 
+                        ? 'border-red-500 bg-red-50 text-red-700 shadow-sm' 
+                        : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Icon size={24} className={`mb-2 ${isSelected ? 'text-red-500' : 'text-slate-400'}`} />
+                    <span className="font-semibold text-sm leading-tight">{label}</span>
+                  </button>
+                );
+              })}
+            </div>
+            
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => {
+                  setShowResetModal(false);
+                }}
+                className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-xl transition-colors font-medium"
+              >
+                ביטול
+              </button>
+              <button
+                disabled={!Object.values(resetSelection).some(v => v)}
+                onClick={() => {
+                  const keysToReset = DATA_KEYS.filter(k => resetSelection[k.key] && k.key !== 'settings').map(k => k.key);
+                  if (keysToReset.length > 0) {
+                    resetDataPartial(keysToReset);
+                    toast.success('הנתונים שנבחרו אופסו בהצלחה!');
+                  }
+                  setShowResetModal(false);
+                  setResetConfirm(''); // reset confirm box
+                }}
+                className="px-4 py-2 bg-red-600 text-white hover:bg-red-700 rounded-xl disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium"
+              >
+                מחק נתונים נבחרים
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

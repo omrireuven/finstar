@@ -73,7 +73,7 @@ export default function Savings() {
   const [savingsForm, setSavingsForm] = useState(SAVINGS_BLANK);
 
   // ── Gemel state ──────────────────────────────────────────────────────────
-  const GEMEL_BLANK = { name: '', company: GEMEL_COMPANIES[0], balance: '', track: GEMEL_TRACKS[0], managementFee: '', annualReturn: '', totalReturn: '' };
+  const GEMEL_BLANK = { name: '', company: GEMEL_COMPANIES[0], balance: '', track: GEMEL_TRACKS[0], managementFee: '', annualReturn: '', depositFee: '', employeeContribution: '', employerContribution: '', salary: '' };
   const [gemelAddModal, setGemelAddModal] = useState(false);
   const [gemelEditId, setGemelEditId] = useState<string | null>(null);
   const [gemelForm, setGemelForm] = useState(GEMEL_BLANK);
@@ -124,15 +124,15 @@ export default function Savings() {
 
   function openGemelEdit(g: GemelFund) {
     setGemelEditId(g.id);
-    setGemelForm({ name: g.name, company: g.company, balance: String(g.balance), track: g.track, managementFee: String(g.managementFee), annualReturn: String(g.annualReturn), totalReturn: String(g.totalReturn) });
+    setGemelForm({ name: g.name, company: g.company, balance: String(g.balance), track: g.track, managementFee: String(g.managementFee), annualReturn: String(g.annualReturn), depositFee: String(g.depositFee || 0), employeeContribution: String(g.employeeContribution || 0), employerContribution: String(g.employerContribution || 0), salary: String(g.salary || 0) });
   }
   function saveGemelEdit() {
     if (!gemelEditId) return;
-    updateGemel(gemelEditId, { name: gemelForm.name, company: gemelForm.company, balance: +gemelForm.balance, track: gemelForm.track, managementFee: +gemelForm.managementFee, annualReturn: +gemelForm.annualReturn, totalReturn: +gemelForm.totalReturn });
+    updateGemel(gemelEditId, { name: gemelForm.name, company: gemelForm.company, balance: +gemelForm.balance, track: gemelForm.track, managementFee: +gemelForm.managementFee, annualReturn: +gemelForm.annualReturn, depositFee: +gemelForm.depositFee, employeeContribution: +gemelForm.employeeContribution, employerContribution: +gemelForm.employerContribution, salary: +gemelForm.salary });
     setGemelEditId(null);
   }
   function addGemelFund() {
-    addGemel({ name: gemelForm.name, company: gemelForm.company, balance: +gemelForm.balance, track: gemelForm.track, managementFee: +gemelForm.managementFee, annualReturn: +gemelForm.annualReturn, totalReturn: +gemelForm.totalReturn });
+    addGemel({ name: gemelForm.name, company: gemelForm.company, balance: +gemelForm.balance, track: gemelForm.track, managementFee: +gemelForm.managementFee, annualReturn: +gemelForm.annualReturn, depositFee: +gemelForm.depositFee, employeeContribution: +gemelForm.employeeContribution, employerContribution: +gemelForm.employerContribution, salary: +gemelForm.salary });
     setGemelAddModal(false);
     setGemelForm(GEMEL_BLANK);
   }
@@ -359,7 +359,7 @@ export default function Savings() {
               <div className="grid grid-cols-4 gap-4 mt-4 pt-4 border-t border-slate-100 text-sm">
                 <div><div className="text-slate-400">דמי ניהול</div><div className="font-medium">{fmt(g.managementFee, 2)}%</div></div>
                 <div><div className="text-slate-400">תשואה שנתית</div><div className={`font-medium ${g.annualReturn >= 0 ? 'text-green-600' : 'text-red-500'}`}>{g.annualReturn >= 0 ? '+' : ''}{fmt(g.annualReturn, 1)}%</div></div>
-                <div><div className="text-slate-400">תשואה מצטברת</div><div className={`font-medium ${g.totalReturn >= 0 ? 'text-green-600' : 'text-red-500'}`}>{g.totalReturn >= 0 ? '+' : ''}{fmt(g.totalReturn, 1)}%</div></div>
+                <div><div className="text-slate-400">תשואה מצטברת</div><div className={`font-medium ${g.annualReturn >= 0 ? 'text-green-600' : 'text-red-500'}`}>{g.annualReturn >= 0 ? '+' : ''}{fmt(g.annualReturn, 1)}%</div></div>
                 <div className="flex gap-2 items-end">
                   <button onClick={() => openGemelEdit(g)} className="text-xs px-3 py-1.5 border border-slate-200 rounded-lg hover:bg-slate-50 flex items-center gap-1">
                     <Pencil size={11} /> ערוך
@@ -628,7 +628,7 @@ function SavingsForm({ form, setForm, banks }: { form: any; setForm: (f: any) =>
 function GemelForm({ form, setForm, companies, tracks }: { form: any; setForm: (f: any) => void; companies: string[]; tracks: string[] }) {
   return (
     <div className="space-y-4">
-      {([{ key: 'name', label: 'שם הקרן' }, { key: 'balance', label: 'יתרה נוכחית (₪)', type: 'number' }, { key: 'managementFee', label: 'דמי ניהול (%)', type: 'number' }, { key: 'annualReturn', label: 'תשואה שנתית (%)', type: 'number' }, { key: 'totalReturn', label: 'תשואה מצטברת (%)', type: 'number' }] as {key:string;label:string;type?:string}[]).map(({ key, label, type = 'text' }) => (
+      {([{ key: 'name', label: 'שם הקרן' }, { key: 'balance', label: 'יתרה נוכחית (₪)', type: 'number' }, { key: 'managementFee', label: 'דמי ניהול (%)', type: 'number' }, { key: 'annualReturn', label: 'תשואה שנתית (%)', type: 'number' }] as {key:string;label:string;type?:string}[]).map(({ key, label, type = 'text' }) => (
       <div key={key}>
         <label className="block text-sm font-medium text-slate-700 mb-1">{label}</label>
         <input type={type} value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })}
