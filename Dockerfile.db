@@ -7,6 +7,7 @@ WORKDIR /app
 RUN npm init -y && npm install express
 
 COPY server/db-server.js ./index.js
+COPY server/telegram-bot.js ./telegram-bot.js
 
 # Data directory will be mounted as a volume
 RUN mkdir -p /data

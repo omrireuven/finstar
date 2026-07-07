@@ -1,5 +1,6 @@
 import express from 'express';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { startTelegramBot } from './telegram-bot.js';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -67,4 +68,5 @@ app.post('/api/db', (req, res) => {
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`💾 Finstar DB Server running on port ${PORT}`);
+  startTelegramBot();
 });

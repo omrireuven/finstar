@@ -46,10 +46,7 @@ import type {
   GemelFund, HishtalmutFund, PensionFund, IncomeEntry, Goal, JournalEntry, Category, CategoryDef, AiBatchRecommendations
 } from '../types';
 import { ALL_CATEGORIES, CATEGORY_COLORS } from '../types';
-import {
-  mockTransactions, mockRecurring, mockLots, mockPrices, mockSavings,
-  mockGemel, mockPension, mockIncome, mockGoals, mockJournal, USD_ILS,
-} from '../data/mockData';
+const USD_ILS = 3.65;
 import { nanoid } from '../utils/nanoid';
 
 // ── Built-in categories (used as initial store state) ────────────────────────

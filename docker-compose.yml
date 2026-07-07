@@ -6,7 +6,7 @@ services:
       dockerfile: Dockerfile
     container_name: finstar-web
     ports:
-      - "8080:80"
+      - "8081:80"
     depends_on:
       - finstar-server
       - finstar-scraper
@@ -23,7 +23,10 @@ services:
     ports:
       - "3002:3000"
     volumes:
-      - finstar-data:/data
+      - ./server:/data
+    environment:
+      - DB_FILE=/data/finstar-db.json
+      - SETTINGS_FILE=/data/finstar-settings.json
     restart: unless-stopped
     networks:
       - finstar-net
