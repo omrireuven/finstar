@@ -19,6 +19,7 @@ const DATA_KEYS = [
   { key: 'lots', label: 'מניות ותיק השקעות', icon: TrendingUp },
   { key: 'savings', label: 'פיקדונות', icon: Landmark },
   { key: 'gemel', label: 'קופות גמל', icon: PiggyBank },
+  { key: 'hishtalmut', label: 'קרן השתלמות', icon: Wallet },
   { key: 'pension', label: 'פנסיה', icon: Building },
   { key: 'income', label: 'הכנסות', icon: HandCoins },
   { key: 'goals', label: 'יעדים ותקציב', icon: Target },

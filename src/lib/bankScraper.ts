@@ -190,7 +190,7 @@ const ERROR_MESSAGES: Record<string, string> = {
   UNKNOWN_ERROR: 'שגיאה לא ידועה מהבנק',
   TIMEOUT: 'הסנכרון ארך יותר מדי זמן — נסה שוב',
   GENERIC: 'שגיאה כללית בסנכרון',
-  SERVER_ERROR: 'שרת ה-scraper לא זמין — ודא שהוא רץ',
+  SERVER_ERROR: 'שגיאה פנימית בסקרייפר - הבנק חסם או שינה מבנה',
   MISSING_PARAMS: 'פרמטרים חסרים — בדוק את הגדרות החשבון',
   INVALID_COMPANY: 'חברה לא מוכרת',
 };

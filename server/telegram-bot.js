@@ -95,6 +95,25 @@ async function sendMessage(token, chatId, text) {
   }
 }
 
+async function sendPhoto(token, chatId, photoUrl, caption = '') {
+  if (!token || !chatId) return false;
+  try {
+    const res = await fetch(`${TG_BASE}/bot${token}/sendPhoto`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: chatId,
+        photo: photoUrl,
+        caption: caption,
+        parse_mode: 'HTML',
+      }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 async function sendReplyKeyboard(token, chatId, text, buttons) {
   if (!token || !chatId) return false;
   try {
@@ -288,6 +307,62 @@ function getAllTransactions(dbState) {
 }
 
 // ── Portfolio summary formatter ──────────────────────────────────────────────
+
+function getPortfolioChartUrl(dbState) {
+  const lots = dbState.lots || [];
+  const prices = dbState.prices || {};
+  const usdIls = dbState.usdIls || 3.65;
+  
+  const byTicker = {};
+  for (const lot of lots.filter((l) => !l.sellDate)) {
+    if (!byTicker[lot.ticker]) {
+      byTicker[lot.ticker] = { ticker: lot.ticker, quantity: 0, currency: lot.currency };
+    }
+    byTicker[lot.ticker].quantity += lot.quantity;
+  }
+  
+  const rows = Object.values(byTicker).map(r => {
+    const price = prices[r.ticker] ?? 0;
+    const rate = r.currency === 'USD' ? usdIls : 1;
+    const currentValueILS = r.quantity * price * rate;
+    return { symbol: r.ticker, currentValueILS };
+  }).filter(r => r.currentValueILS > 0);
+
+  if (rows.length === 0) return null;
+
+  rows.sort((a, b) => b.currentValueILS - a.currentValueILS);
+
+  const labels = rows.map(r => r.symbol);
+  const data = rows.map(r => r.currentValueILS.toFixed(0));
+
+  const chartConfig = {
+    type: 'outlabeledPie',
+    data: {
+      labels: labels,
+      datasets: [{
+        backgroundColor: [
+          '#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF',
+          '#FF9F40', '#E7E9ED', '#71B37C', '#EC932F', '#7E57C2'
+        ],
+        data: data
+      }]
+    },
+    options: {
+      plugins: {
+        legend: false,
+        outlabels: {
+          text: '%l %p',
+          color: 'white',
+          stretch: 35,
+          font: { resizable: true, minSize: 12, maxSize: 18 }
+        }
+      }
+    }
+  };
+
+  const encodedConfig = encodeURIComponent(JSON.stringify(chartConfig));
+  return `https://quickchart.io/chart?w=600&h=400&c=${encodedConfig}`;
+}
 
 function getPortfolioSummaryText(dbState) {
   const lots = dbState.lots || [];
@@ -728,7 +803,17 @@ async function handleText(text, msgDate, tk, cid) {
   if (t.startsWith('📊 סיכום תיק')) {
     conv = { step: 'idle' };
     const pSummary = getPortfolioSummaryText(dbState);
-    await sendMessage(tk, cid, pSummary);
+    if (pSummary.includes('לא נמצאו מניות בתיק')) {
+      await sendMessage(tk, cid, pSummary);
+      return;
+    }
+    const chartUrl = getPortfolioChartUrl(dbState);
+    if (chartUrl) {
+      await sendPhoto(tk, cid, chartUrl, `📊 שווי תיק נוכחי`);
+      await sendMessage(tk, cid, pSummary);
+    } else {
+      await sendMessage(tk, cid, pSummary);
+    }
     return;
   }
   if (t.startsWith('📅 חיובים')) {
@@ -1459,7 +1544,6 @@ async function scheduled() {
 
   try {
     await checkRecurring(tk, cid);
-    await checkPendingTransactions(tk, cid);
     await checkAllBudgetWarnings(tk, cid);
     await checkDailySummary(tk, cid);
     await checkWeeklySummary(tk, cid);

@@ -3,36 +3,79 @@ import { persist, createJSONStorage, type StateStorage } from 'zustand/middlewar
 
 const apiUrl = typeof window === 'undefined' ? 'http://localhost:3002/api/settings' : '/api/settings';
 
+let pendingSettingsSaves = 0;
+let isSavingSettings = false;
+let nextSaveSettingsValue: string | null = null;
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', (e) => {
+    if (pendingSettingsSaves > 0) {
+      e.preventDefault();
+      e.returnValue = 'ההגדרות עדיין נשמרות, האם אתה בטוח שברצונך לצאת?';
+      return e.returnValue;
+    }
+  });
+}
+
 const serverStorage: StateStorage = {
   getItem: async (name: string): Promise<string | null> => {
     try {
-      const res = await fetch(apiUrl);
-      if (res.ok) {
-        const data = await res.json();
-        if (!data || Object.keys(data).length === 0 || data.state === null) {
-          console.log('Server returned empty data, falling back to local storage');
-          if (typeof window !== 'undefined' && window.localStorage) return window.localStorage.getItem(name);
-          return null;
-        }
-        return JSON.stringify(data);
+      const res = await fetch(apiUrl, { cache: 'no-store' });
+      if (!res.ok) {
+        throw new Error(`Server returned ${res.status}`);
       }
+      const data = await res.json();
+      if (!data || Object.keys(data).length === 0 || data.state === null) {
+        console.log('Server returned empty data, migrating from local storage if available');
+        if (typeof window !== 'undefined' && window.localStorage) {
+          const localData = window.localStorage.getItem(name);
+          if (localData) {
+            // Migrate local data to server
+            fetch(apiUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: localData,
+            }).catch(e => console.error('Migration failed:', e));
+            return localData;
+          }
+        }
+        return null;
+      }
+      return JSON.stringify(data);
     } catch (e) {
-      console.warn('Failed to fetch settings from server, falling back to local storage', e);
-      if (typeof window !== 'undefined' && window.localStorage) return window.localStorage.getItem(name);
+      console.warn('Failed to fetch settings from server (server might be down). Halting app to prevent data wipe.', e);
+      // Hang hydration forever so Zustand doesn't initialize with empty state and overwrite the DB
+      return await new Promise(() => {});
     }
-    return null;
   },
   setItem: async (name: string, value: string): Promise<void> => {
+    nextSaveSettingsValue = value;
+    if (isSavingSettings) return;
+    
+    isSavingSettings = true;
+    pendingSettingsSaves++;
+    
     try {
-      await fetch(apiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: value,
-      });
-      if (typeof window !== 'undefined' && window.localStorage) window.localStorage.setItem(name, value);
-    } catch (e) {
-      console.warn('Failed to save settings to server, saving locally', e);
-      if (typeof window !== 'undefined' && window.localStorage) window.localStorage.setItem(name, value);
+      while (nextSaveSettingsValue !== null) {
+        const valueToSave = nextSaveSettingsValue;
+        nextSaveSettingsValue = null;
+        
+        try {
+          await fetch(apiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: valueToSave,
+          });
+        } catch (e) {
+          console.warn('Failed to save settings to server', e);
+        }
+      }
+      
+      // Ensure local storage is cleared so data is strictly on the server
+      if (typeof window !== 'undefined' && window.localStorage) window.localStorage.removeItem(name);
+    } finally {
+      isSavingSettings = false;
+      pendingSettingsSaves--;
     }
   },
   removeItem: async (name: string): Promise<void> => {

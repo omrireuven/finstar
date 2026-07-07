@@ -187,7 +187,7 @@ export function useManualSync() {
         // If AI suggested deleting a refund, suggest deleting the original expense too!
         const extraDeletes: { transactionId: string; reason: string }[] = [];
         
-        analysis.toDelete.forEach(aiDel => {
+        (analysis.toDelete || []).forEach(aiDel => {
           const tx = newlyImportedExpenses.find(t => t.id === aiDel.transactionId);
           if (tx && (tx.amount < 0 || tx.business.includes('החזר') || tx.business.includes('ביטול') || tx.business.includes('זיכוי'))) {
             const opposite = transactions.find(t => t.business === tx.business && t.amount === Math.abs(tx.amount)) ||
@@ -203,7 +203,7 @@ export function useManualSync() {
 
         // Run local matching heuristics and merge into recommendations
         const localLinks = getLocalLinkRecommendations(newlyImportedExpenses, recurring, transactions);
-        const combinedLinks = [...analysis.toLink];
+        const combinedLinks = [...(analysis.toLink || [])];
         for (const local of localLinks) {
           if (!combinedLinks.some(l => l.transactionId === local.transactionId)) {
             combinedLinks.push(local);
@@ -213,9 +213,9 @@ export function useManualSync() {
         // Combine with existing AI recommendations
         const currentRecs = aiRecommendations || { toDelete: [], toLink: [], categorizations: {}, incomesToDelete: [] };
         const updatedRecommendations = {
-          toDelete: [...currentRecs.toDelete, ...analysis.toDelete, ...extraDeletes],
-          toLink: [...currentRecs.toLink, ...combinedLinks],
-          categorizations: { ...currentRecs.categorizations, ...analysis.categorizations },
+          toDelete: [...(currentRecs.toDelete || []), ...(analysis.toDelete || []), ...extraDeletes],
+          toLink: [...(currentRecs.toLink || []), ...combinedLinks],
+          categorizations: { ...(currentRecs.categorizations || {}), ...(analysis.categorizations || {}) },
           incomesToDelete: [...(currentRecs.incomesToDelete || []), ...(analysis.incomesToDelete || [])],
           log: analysis.log
         };

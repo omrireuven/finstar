@@ -105,6 +105,7 @@ app.post('/api/scrape', async (req, res) => {
       combineInstallments: false,
       showBrowser: false,
       timeout: 120000, // 2 minutes
+      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium',
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     };
 

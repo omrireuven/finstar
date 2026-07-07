@@ -1,12 +1,12 @@
 import { useState } from 'react';
-import { Trash2 } from 'lucide-react';
+import { Trash2, X } from 'lucide-react';
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, Legend,
   ResponsiveContainer, CartesianGrid,
 } from 'recharts';
 import { useStore, useCategoryList, useCategoryColorMap } from '../store';
 import Card from '../components/common/Card';
-import { fmtCurrency, fmtMonthYear } from '../utils/format';
+import { fmtCurrency, fmtMonthYear, fmtDate } from '../utils/format';
 
 const MONTHS_HE = ['ינואר', 'פברואר', 'מרץ', 'אפריל', 'מאי', 'יוני', 'יולי', 'אוגוסט', 'ספטמבר', 'אוקטובר', 'נובמבר', 'דצמבר'];
 const MONTHS_SHORT = ['ינו', 'פב', 'מר', 'אפ', 'מא', 'יוני', 'יולי', 'אוג', 'ספ', 'אוק', 'נוב', 'דצ'];
@@ -24,6 +24,7 @@ export default function Trends() {
 
   const [year, setYear] = useState(new Date().getFullYear());
   const [selectedMonth, setSelectedMonth] = useState<number | null>(null);
+  const [openCat, setOpenCat] = useState<string | null>(null);
 
   // ── Journal helpers ──────────────────────────────────────────────────────
   const yearEntries = journal.filter((e) => e.year === year);
@@ -263,14 +264,20 @@ export default function Trends() {
                       const color = catColors[cat] ?? '#9ca3af';
                       const isOver = goal && amount > goal.targetAmount;
                       return (
-                        <div key={cat}>
+                        <button
+                          key={cat}
+                          onClick={() => setOpenCat(openCat === cat ? null : cat)}
+                          className={`w-full block text-right p-2 -mx-2 rounded-lg transition-colors border ${
+                            openCat === cat ? 'bg-slate-50 border-slate-200' : 'border-transparent hover:bg-slate-50'
+                          }`}
+                        >
                           <div className="flex justify-between text-sm mb-1">
                             <span className="flex items-center gap-1.5">
-                              <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: color }} />
+                              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
                               <span className="text-slate-700">{cat}</span>
-                              {isOver && <span className="text-xs text-red-500">חריגה</span>}
+                              {isOver && <span className="text-xs text-red-500 shrink-0">חריגה</span>}
                             </span>
-                            <span className="font-medium text-slate-900">
+                            <span className="font-medium text-slate-900 shrink-0">
                               {fmtCurrency(amount)}
                               {goal && (
                                 <span className="text-slate-400 font-normal mr-1">
@@ -285,10 +292,42 @@ export default function Trends() {
                               style={{ width: `${pct}%`, backgroundColor: isOver ? '#ef4444' : color }}
                             />
                           </div>
-                        </div>
+                        </button>
                       );
                     })}
                   </div>
+
+                  {/* Drill-down panel */}
+                  {openCat && (() => {
+                    const catTxns = txns.filter((t) => (t.categoryOverride || t.category) === openCat).sort((a, b) => b.date.localeCompare(a.date));
+                    const catTotal = catTxns.reduce((s, t) => s + t.amount, 0);
+                    const color = catColors[openCat] ?? '#9ca3af';
+                    return (
+                      <div className="mt-4 rounded-xl border border-slate-200 overflow-hidden animate-scale-in">
+                        <div className="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-b border-slate-100">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                            <span className="text-sm font-semibold text-slate-700">{openCat}</span>
+                            <span className="text-xs text-slate-400">{catTxns.length} עסקאות</span>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="text-sm font-bold text-slate-900 shrink-0">{fmtCurrency(catTotal)}</span>
+                            <button onClick={() => setOpenCat(null)} className="text-slate-400 hover:text-slate-600 shrink-0"><X size={14} /></button>
+                          </div>
+                        </div>
+                        <div className="divide-y divide-slate-50 max-h-64 overflow-y-auto">
+                          {catTxns.map((t) => (
+                            <div key={t.id} className="flex items-center gap-4 px-4 py-2 text-sm hover:bg-slate-50">
+                              <span className="text-slate-400 shrink-0 w-20">{fmtDate(t.date)}</span>
+                              <span className="flex-1 text-slate-700 truncate">{t.business}</span>
+                              {t.notes && <span className="text-slate-400 truncate max-w-32 hidden sm:block">{t.notes}</span>}
+                              <span className="font-semibold text-slate-900 shrink-0">{fmtCurrency(t.amount)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </Card>
               );
             })()}

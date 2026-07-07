@@ -1,7 +1,7 @@
 import { useSettings } from '../store/settingsStore';
 import type { Category } from '../types';
 
-const MODEL_TIMEOUT_MS = 8_000; // 8 seconds per model before giving up and trying next
+const MODEL_TIMEOUT_MS = 35_000; // 35 seconds per model before giving up and trying next
 
 async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = MODEL_TIMEOUT_MS): Promise<Response> {
   const timeoutController = new AbortController();
@@ -757,8 +757,8 @@ export async function llmAnalyzeNewTransactions(
       abortSignal
     );
 
-    merged.toDelete.push(...res.toDelete);
-    merged.toLink.push(...res.toLink);
+    merged.toDelete.push(...(res.toDelete || []));
+    merged.toLink.push(...(res.toLink || []));
     Object.assign(merged.categorizations, res.categorizations);
     if (res.incomesToDelete) {
       merged.incomesToDelete!.push(...res.incomesToDelete);
