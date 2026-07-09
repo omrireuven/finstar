@@ -454,16 +454,16 @@ export default function Dashboard() {
       {(portfolioTimeline.length > 1 || stockReturns.length > 0) && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {portfolioTimeline.length > 1 && (
-            <Card className="lg:col-span-2">
+            <Card className="lg:col-span-2 flex flex-col">
               <div className="flex items-center justify-between mb-4">
                 <h2 className="font-semibold text-slate-900">ביצועי תיק לאורך זמן</h2>
                 <button onClick={() => navigate('/stocks')} className="text-sm text-blue-600 flex items-center gap-1 hover:underline">לתיק <ArrowLeft size={14} /></button>
               </div>
 
-              <div className="flex gap-4 items-stretch">
+              <div className="flex gap-4 items-stretch flex-1 min-h-[220px]">
                 {/* Chart */}
                 <div className="flex-1 min-w-0">
-                  <ResponsiveContainer width="100%" height={220}>
+                  <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={portfolioTimeline}>
                       <XAxis dataKey="label" tick={{ fontSize: 11 }} interval={Math.max(0, Math.floor(portfolioTimeline.length / 6) - 1)} />
                       <YAxis tickFormatter={(v) => `₪${(v / 1000).toFixed(0)}k`} tick={{ fontSize: 11 }} width={48} />
