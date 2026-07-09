@@ -224,7 +224,7 @@ export async function capturePortfolioChart(
       const data = await fetchHistory(ticker, corsProxy, '3mo');
       if (data.length > 0) allHistory.set(ticker, data);
       await new Promise(r => setTimeout(r, 300));
-    } catch { 
+    } catch (e) { 
       /* skip missing ticker */ 
     }
   }

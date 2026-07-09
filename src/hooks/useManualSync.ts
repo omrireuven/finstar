@@ -85,8 +85,9 @@ export function useManualSync() {
           if (incomes.length > 0) {
             const existingIncomeKeys = new Set(income.map((i) => `${i.date}-${i.source}-${i.netAmount}`));
             const freshIncomes = incomes.filter(i => {
-              if (existingIncomeKeys.has(`${i.date}-${i.source}-${i.netAmount}`)) return false;
-              if (ignoredIdentifiers.includes(String(i.id))) return false; // assuming scraper uses identifier as id
+              const key = `${i.date}-${i.source}-${i.netAmount}`;
+              if (existingIncomeKeys.has(key)) return false;
+              if (ignoredIdentifiers.includes(key)) return false; // key registered via addIgnoredIdentifier when the user deletes an income
               return true;
             });
             

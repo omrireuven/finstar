@@ -102,8 +102,8 @@ export default function Income() {
               dataKey="הכנסה"
               radius={[4, 4, 0, 0]}
               onClick={(data) => {
-                if (data && data.key) {
-                  setMonthFilter(monthFilter === data.key ? null : data.key);
+                if (data && String(data.key)) {
+                  setMonthFilter(monthFilter === data.key ? null : String(data.key));
                 }
               }}
             >

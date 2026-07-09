@@ -140,7 +140,7 @@ export async function fetchHistory(
         volume: volumes[i] ?? 0,
       }))
       .filter((p) => p.close > 0);
-  } catch {
+  } catch (e) {
     return [];
   }
 }

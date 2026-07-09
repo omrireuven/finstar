@@ -68,7 +68,7 @@ export default function BankAccounts() {
         try {
           const list = await fetchSupportedCompanies();
           if (!cancelled) setCompanies(list);
-        } catch {
+        } catch (e) {
           // server returned bad data
         }
       }

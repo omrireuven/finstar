@@ -49,30 +49,50 @@ const serverStorage: StateStorage = {
     }
   },
   setItem: async (name: string, value: string): Promise<void> => {
+    // Guard against writes triggered by effects that fire before the server
+    // fetch in getItem() has resolved — saving now would overwrite the real
+    // settings file with whatever default/partial state the store still holds.
+    if (!useSettings.persist.hasHydrated()) {
+      console.warn('Skipping save: settings store has not finished hydrating from server yet');
+      return;
+    }
+
     nextSaveSettingsValue = value;
     if (isSavingSettings) return;
-    
+
     isSavingSettings = true;
     pendingSettingsSaves++;
-    
+    let anySaveFailed = false;
+
     try {
       while (nextSaveSettingsValue !== null) {
         const valueToSave = nextSaveSettingsValue;
         nextSaveSettingsValue = null;
-        
+
         try {
-          await fetch(apiUrl, {
+          const res = await fetch(apiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: valueToSave,
           });
+          if (!res.ok) {
+            const errText = await res.text().catch(() => res.statusText);
+            throw new Error(`Server returned ${res.status}: ${errText}`);
+          }
         } catch (e) {
-          console.warn('Failed to save settings to server', e);
+          console.error('Failed to save settings to server — changes were NOT persisted!', e);
+          anySaveFailed = true;
         }
       }
-      
-      // Ensure local storage is cleared so data is strictly on the server
-      if (typeof window !== 'undefined' && window.localStorage) window.localStorage.removeItem(name);
+
+      if (typeof window !== 'undefined' && window.localStorage) {
+        if (anySaveFailed) {
+          window.localStorage.setItem(name, value);
+        } else {
+          // Ensure local storage is cleared so data is strictly on the server
+          window.localStorage.removeItem(name);
+        }
+      }
     } finally {
       isSavingSettings = false;
       pendingSettingsSaves--;

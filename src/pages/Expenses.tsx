@@ -297,7 +297,7 @@ export default function Expenses() {
         if (t.metadata && typeof t.metadata === 'object') {
           try {
             metadataMatch = JSON.stringify(t.metadata).toLowerCase().includes(query);
-          } catch {}
+          } catch (e) {}
         }
         if (!businessMatch && !categoryMatch && !sourceMatch && !notesMatch && !amountMatch && !dateMatch && !aiMatch && !metadataMatch) {
           return false;
@@ -389,7 +389,7 @@ export default function Expenses() {
         setDupResult(null);
         setImportToast(buildToast(fresh));
       }
-    } catch {
+    } catch (e) {
       alert('שגיאה בייבוא הקובץ');
     }
     setImporting(false);
@@ -1011,7 +1011,10 @@ export default function Expenses() {
                           onClick={(e) => {
                             e.stopPropagation();
                             deleteIncome(t.id);
-                            addIgnoredIdentifier(t.id);
+                            // Incomes have no stable scraper identifier — register the
+                            // date+source+amount key the sync dedup checks against, so
+                            // this currency-conversion income isn't re-imported next sync.
+                            addIgnoredIdentifier(`${t.date}-${t.business}-${t.amount}`);
                             setAiRecommendations({
                               ...aiRecommendations!,
                               incomesToDelete: aiRecommendations!.incomesToDelete?.filter(d => d.incomeId !== t.id)

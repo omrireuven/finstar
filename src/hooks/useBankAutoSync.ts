@@ -13,12 +13,23 @@ import { useSyncProgress } from '../store/syncProgressStore';
 import type { SyncLog, Transaction } from '../types';
 
 export function useBankAutoSync() {
-  const { addTransactions, addIncomes, categoryRules, categoryRulesMeta, recurring, categories, aiRecommendations, setAiRecommendations, transactions, income, ignoredIdentifiers, addIgnoredIdentifier, deleteTransactions, setCategoryRule } = useStore();
-  const { bankAccounts, updateBankAccount, autoSyncIntervalMinutes, autoSyncDaysBack, telegramBotToken, telegramChatId } = useSettings();
+  const { bankAccounts, autoSyncIntervalMinutes } = useSettings();
   const syncingInProgress = useRef(false);
   const { startSync, updateStep, finishSync } = useSyncProgress();
 
   async function checkAndSync() {
+    // Read fresh state at call time — this function is invoked from a long-lived
+    // setInterval closure (set up once per effect run), so relying on values
+    // destructured at the top of the hook would go stale: deletions or settings
+    // changes made after the interval was created would never be seen, and
+    // already-deleted transactions would keep getting re-imported.
+    const {
+      addTransactions, addIncomes, categoryRules, categoryRulesMeta, recurring, categories,
+      aiRecommendations, setAiRecommendations, transactions, income, ignoredIdentifiers,
+      addIgnoredIdentifier, deleteTransactions, setCategoryRule,
+    } = useStore.getState();
+    const { bankAccounts, updateBankAccount, autoSyncDaysBack, telegramBotToken, telegramChatId } = useSettings.getState();
+
     if (bankAccounts.length === 0 || syncingInProgress.current) return;
 
     const todayStr = new Date().toISOString().slice(0, 10);
@@ -95,8 +106,9 @@ export function useBankAutoSync() {
           if (incomes.length > 0) {
             const existingIncomeKeys = new Set(income.map((i) => `${i.date}-${i.source}-${i.netAmount}`));
             const freshIncomes = incomes.filter(i => {
-              if (existingIncomeKeys.has(`${i.date}-${i.source}-${i.netAmount}`)) return false;
-              if (ignoredIdentifiers.includes(String(i.id))) return false; // assuming scraper uses identifier as id
+              const key = `${i.date}-${i.source}-${i.netAmount}`;
+              if (existingIncomeKeys.has(key)) return false;
+              if (ignoredIdentifiers.includes(key)) return false; // key registered via addIgnoredIdentifier when the user deletes an income
               return true;
             });
             

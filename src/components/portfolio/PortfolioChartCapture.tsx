@@ -81,7 +81,7 @@ const PortfolioChartCapture = forwardRef<HTMLDivElement, Props>(
               try {
                 const data = await fetchHistory(ticker, corsProxy, '3mo');
                 if (data.length > 0) allHistory.set(ticker, data);
-              } catch { /* skip */ }
+              } catch (e) { /* skip */ }
             }
           })
         );

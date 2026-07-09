@@ -50,30 +50,52 @@ const serverStorage: StateStorage = {
     }
   },
   setItem: async (name: string, value: string): Promise<void> => {
+    // Guard against writes triggered by effects that fire before the server
+    // fetch in getItem() has resolved — saving now would overwrite the real
+    // DB with whatever default/partial state the store still holds.
+    if (!useStore.persist.hasHydrated()) {
+      console.warn('Skipping save: store has not finished hydrating from server yet');
+      return;
+    }
+
     nextSaveValue = value;
     if (isSaving) return;
-    
+
     isSaving = true;
     pendingSaves++;
-    
+    let anySaveFailed = false;
+
     try {
       while (nextSaveValue !== null) {
         const valueToSave = nextSaveValue;
         nextSaveValue = null;
-        
+
         try {
-          await fetch(apiUrl, {
+          const res = await fetch(apiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: valueToSave,
           });
+          if (!res.ok) {
+            const errText = await res.text().catch(() => res.statusText);
+            throw new Error(`Server returned ${res.status}: ${errText}`);
+          }
         } catch (e) {
-          console.warn('Failed to save to server db', e);
+          console.error('Failed to save to server db — changes were NOT persisted!', e);
+          anySaveFailed = true;
         }
       }
-      
-      // Ensure local storage is cleared so data is strictly on the server
-      if (typeof window !== 'undefined' && window.localStorage) window.localStorage.removeItem(name);
+
+      if (typeof window !== 'undefined' && window.localStorage) {
+        if (anySaveFailed) {
+          // Keep the latest state in local storage so it isn't lost if the
+          // page is closed before a save eventually succeeds.
+          window.localStorage.setItem(name, value);
+        } else {
+          // Ensure local storage is cleared so data is strictly on the server
+          window.localStorage.removeItem(name);
+        }
+      }
     } finally {
       isSaving = false;
       pendingSaves--;
@@ -106,10 +128,21 @@ export interface CategoryRuleMeta {
   originalAiCat?: string;
 }
 
+/** Audit entry for a deleted scraped transaction — lets the user review/undo entries in `ignoredIdentifiers`. */
+export interface DeletedTransactionLogEntry {
+  identifier: string;
+  business: string;
+  amount: number;
+  date: string;
+  deletedAt: string;
+}
+
 interface FinstarState {
   transactions: Transaction[];
   ignoredIdentifiers: string[]; // Identifiers of deleted scraped transactions to prevent re-import
+  deletedTransactionsLog: DeletedTransactionLogEntry[]; // human-readable audit trail behind ignoredIdentifiers
   addIgnoredIdentifier: (id: string) => void;
+  unignoreIdentifier: (identifier: string) => void;
   aiRecommendations: AiBatchRecommendations | null; // stored batch recommendations
   recurring: RecurringCharge[];
   lots: PortfolioLot[];
@@ -192,6 +225,7 @@ export const useStore = create<FinstarState>()(
     (set) => ({
       transactions: [],
       ignoredIdentifiers: [],
+      deletedTransactionsLog: [],
       aiRecommendations: null,
       recurring: [],
       lots: [],
@@ -237,9 +271,14 @@ export const useStore = create<FinstarState>()(
         set((s) => {
           const t = s.transactions.find((tx) => tx.id === id);
           if (t?.metadata?.identifier) {
+            const identifier = String(t.metadata.identifier);
             return {
               transactions: s.transactions.filter((tx) => tx.id !== id),
-              ignoredIdentifiers: [...s.ignoredIdentifiers, String(t.metadata.identifier)]
+              ignoredIdentifiers: [...s.ignoredIdentifiers, identifier],
+              deletedTransactionsLog: [
+                { identifier, business: t.business, amount: t.amount, date: t.date, deletedAt: new Date().toISOString() },
+                ...s.deletedTransactionsLog,
+              ].slice(0, 500),
             };
           }
           return { transactions: s.transactions.filter((tx) => tx.id !== id) };
@@ -249,22 +288,37 @@ export const useStore = create<FinstarState>()(
         set((s) => {
           const idSet = new Set(ids);
           const toDelete = s.transactions.filter((tx) => idSet.has(tx.id));
-          const newIgnored = toDelete
-            .map((t) => t.metadata?.identifier ? String(t.metadata.identifier) : null)
-            .filter((id): id is string => id !== null);
+          const withIdentifier = toDelete.filter((t) => t.metadata?.identifier);
+          const newIgnored = withIdentifier.map((t) => String(t.metadata!.identifier));
+          const newLogEntries = withIdentifier.map((t) => ({
+            identifier: String(t.metadata!.identifier),
+            business: t.business,
+            amount: t.amount,
+            date: t.date,
+            deletedAt: new Date().toISOString(),
+          }));
 
           return {
             transactions: s.transactions.filter((tx) => !idSet.has(tx.id)),
-            ignoredIdentifiers: newIgnored.length > 0 ? [...s.ignoredIdentifiers, ...newIgnored] : s.ignoredIdentifiers
+            ignoredIdentifiers: newIgnored.length > 0 ? [...s.ignoredIdentifiers, ...newIgnored] : s.ignoredIdentifiers,
+            deletedTransactionsLog: newLogEntries.length > 0
+              ? [...newLogEntries, ...s.deletedTransactionsLog].slice(0, 500)
+              : s.deletedTransactionsLog,
           };
         }),
-        
+
       addIgnoredIdentifier: (id) => set((s) => {
         if (!s.ignoredIdentifiers.includes(id)) {
           return { ignoredIdentifiers: [...s.ignoredIdentifiers, id] };
         }
         return s;
       }),
+
+      /** Removes an identifier from the "don't re-import" registry so it can be scraped again next sync. */
+      unignoreIdentifier: (identifier) => set((s) => ({
+        ignoredIdentifiers: s.ignoredIdentifiers.filter((id) => id !== identifier),
+        deletedTransactionsLog: s.deletedTransactionsLog.filter((e) => e.identifier !== identifier),
+      })),
 
       overrideCategory: (id, category) =>
         set((state) => ({
@@ -474,7 +528,13 @@ export const useStore = create<FinstarState>()(
       storage: createJSONStorage(() => serverStorage),
       partialize: (state) => ({
         ...state,
-        aiRecommendations: state.aiRecommendations 
+        // aiLog embeds the full batch prompt/response on every transaction
+        // in the batch — persisting it multiplies its size by the batch
+        // length and isn't read anywhere in the UI, so drop it before saving.
+        transactions: state.transactions.map((t) =>
+          t.aiLog ? { ...t, aiLog: undefined } : t
+        ),
+        aiRecommendations: state.aiRecommendations
           ? { ...state.aiRecommendations, log: undefined }
           : null,
       }),

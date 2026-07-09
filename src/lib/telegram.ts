@@ -58,7 +58,7 @@ export async function sendReplyKeyboard(
       }),
     });
     return res.ok;
-  } catch { return false; }
+  } catch (e) { return false; }
 }
 
 /** Send a message with an inline keyboard. Returns the sent message_id (or null on error). */
@@ -82,7 +82,7 @@ export async function sendInlineKeyboard(
     });
     const json = await res.json();
     return json.ok ? json.result.message_id : null;
-  } catch { return null; }
+  } catch (e) { return null; }
 }
 
 /** Acknowledge a callback query (removes the loading spinner on the button). */
@@ -94,7 +94,7 @@ export async function answerCallbackQuery(token: string, queryId: string, text?:
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ callback_query_id: queryId, text: text ?? '' }),
     });
-  } catch { /* silent */ }
+  } catch (e) { /* silent */ }
 }
 
 /** Edit the text of an existing message (e.g. after button press). */
@@ -106,7 +106,7 @@ export async function editMessageText(token: string, chatId: string, messageId: 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML' }),
     });
-  } catch { /* silent */ }
+  } catch (e) { /* silent */ }
 }
 
 export async function sendPhoto(
@@ -124,7 +124,7 @@ export async function sendPhoto(
     form.append('parse_mode', 'HTML');
     const res = await fetch(`${TG_BASE}/bot${token}/sendPhoto`, { method: 'POST', body: form });
     return res.ok;
-  } catch {
+  } catch (e) {
     return false;
   }
 }
@@ -149,7 +149,7 @@ export async function sendMessage(
       }
     );
     return res.ok;
-  } catch {
+  } catch (e) {
     return false;
   }
 }
@@ -161,7 +161,7 @@ export async function testBot(token: string): Promise<{ ok: boolean; name?: stri
     const res = await fetch(`${TG_BASE}/bot${token}/getMe`);
     const json = await res.json();
     return { ok: json.ok === true, name: json.result?.username };
-  } catch {
+  } catch (e) {
     return { ok: false };
   }
 }
@@ -174,7 +174,7 @@ export async function getUpdates(token: string): Promise<string | null> {
     const json = await res.json();
     const msg = json?.result?.[0]?.message ?? json?.result?.[0]?.channel_post;
     return msg?.chat?.id ? String(msg.chat.id) : null;
-  } catch {
+  } catch (e) {
     return null;
   }
 }

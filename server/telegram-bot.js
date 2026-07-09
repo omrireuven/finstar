@@ -1,14 +1,22 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { renderPortfolioChartPng, renderPortfolioCardsPng } from './portfolioChart.js';
+import { renderPendingSummaryPng } from './pendingChart.js';
+import { runBankSync } from './bankSync.js';
+import { buildBackupBuffer } from './backup.js';
+import { renderBudgetChartPng } from './budgetChart.js';
 
 const DB_FILE = process.env.DB_FILE || './finstar-db.json';
 const SETTINGS_FILE = process.env.SETTINGS_FILE || '../finstar-settings.json';
 
 // In-memory sets to track already-sent alerts within this process runtime
 const sentConfirmations = new Set();
-const sentPendingAlerts = new Set();
 const sentBudgetWarnings = new Set();
+// message_ids of the last summary sent for each type, so re-requesting one replaces it instead of piling up
+let lastPortfolioMsgIds = [];
+let lastPendingMsgIds = [];
+let lastBudgetMsgIds = [];
 
 let conv = { step: 'idle' };
 let pollTimeout = null;
@@ -31,6 +39,9 @@ function readDb() {
 
 function writeDb(data) {
   try {
+    // Bind-mounting a single file (rather than a directory) into the
+    // container means the temp-file+rename dance fails with EBUSY on
+    // Docker Desktop's file-sharing layer, so we write in place instead.
     fs.writeFileSync(DB_FILE, JSON.stringify(data), 'utf-8');
     return true;
   } catch (e) {
@@ -52,6 +63,9 @@ function readSettings() {
 
 function writeSettings(data) {
   try {
+    // Bind-mounting a single file (rather than a directory) into the
+    // container means the temp-file+rename dance fails with EBUSY on
+    // Docker Desktop's file-sharing layer, so we write in place instead.
     fs.writeFileSync(SETTINGS_FILE, JSON.stringify(data), 'utf-8');
     return true;
   } catch (e) {
@@ -77,8 +91,9 @@ async function getUpdatesPolling(token, offset) {
   }
 }
 
+/** @returns {Promise<number|null>} the sent message_id, or null on failure */
 async function sendMessage(token, chatId, text) {
-  if (!token || !chatId) return false;
+  if (!token || !chatId) return null;
   try {
     const res = await fetch(`${TG_BASE}/bot${token}/sendMessage`, {
       method: 'POST',
@@ -89,27 +104,70 @@ async function sendMessage(token, chatId, text) {
         parse_mode: 'HTML',
       }),
     });
-    return res.ok;
-  } catch {
-    return false;
+    const json = await res.json();
+    return json.ok ? json.result.message_id : null;
+  } catch (e) {
+    return null;
   }
 }
 
-async function sendPhoto(token, chatId, photoUrl, caption = '') {
-  if (!token || !chatId) return false;
+/**
+ * photo: either a URL string (e.g. a QuickChart link) or a PNG Buffer to upload directly.
+ * @returns {Promise<number|null>} the sent message_id, or null on failure
+ */
+async function sendPhoto(token, chatId, photo, caption = '') {
+  if (!token || !chatId) return null;
   try {
-    const res = await fetch(`${TG_BASE}/bot${token}/sendPhoto`, {
+    let res;
+    if (Buffer.isBuffer(photo)) {
+      const form = new FormData();
+      form.append('chat_id', chatId);
+      form.append('photo', new Blob([photo], { type: 'image/png' }), 'chart.png');
+      if (caption) form.append('caption', caption);
+      form.append('parse_mode', 'HTML');
+      res = await fetch(`${TG_BASE}/bot${token}/sendPhoto`, { method: 'POST', body: form });
+    } else {
+      res = await fetch(`${TG_BASE}/bot${token}/sendPhoto`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          photo,
+          caption: caption,
+          parse_mode: 'HTML',
+        }),
+      });
+    }
+    const json = await res.json();
+    return json.ok ? json.result.message_id : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Deletes a message previously sent by the bot (only works within Telegram's 48h window). */
+async function deleteMessage(token, chatId, messageId) {
+  if (!token || !chatId || !messageId) return;
+  try {
+    await fetch(`${TG_BASE}/bot${token}/deleteMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        chat_id: chatId,
-        photo: photoUrl,
-        caption: caption,
-        parse_mode: 'HTML',
-      }),
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
     });
+  } catch (e) { /* silent — message may already be gone or too old to delete */ }
+}
+
+async function sendDocument(token, chatId, buffer, filename, caption = '') {
+  if (!token || !chatId) return false;
+  try {
+    const form = new FormData();
+    form.append('chat_id', chatId);
+    form.append('document', new Blob([buffer], { type: 'application/json' }), filename);
+    if (caption) form.append('caption', caption);
+    form.append('parse_mode', 'HTML');
+    const res = await fetch(`${TG_BASE}/bot${token}/sendDocument`, { method: 'POST', body: form });
     return res.ok;
-  } catch {
+  } catch (e) {
     return false;
   }
 }
@@ -133,7 +191,7 @@ async function sendReplyKeyboard(token, chatId, text, buttons) {
       }),
     });
     return res.ok;
-  } catch {
+  } catch (e) {
     return false;
   }
 }
@@ -153,7 +211,7 @@ async function sendInlineKeyboard(token, chatId, text, buttons) {
     });
     const json = await res.json();
     return json.ok ? json.result.message_id : null;
-  } catch {
+  } catch (e) {
     return null;
   }
 }
@@ -166,7 +224,7 @@ async function answerCallbackQuery(token, queryId, text) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ callback_query_id: queryId, text: text ?? '' }),
     });
-  } catch { /* silent */ }
+  } catch (e) { /* silent */ }
 }
 
 async function editMessageText(token, chatId, messageId, text) {
@@ -183,7 +241,7 @@ async function editMessageText(token, chatId, messageId, text) {
       }),
     });
     return res.ok;
-  } catch {
+  } catch (e) {
     return false;
   }
 }
@@ -191,10 +249,13 @@ async function editMessageText(token, chatId, messageId, text) {
 async function testBot(token) {
   try {
     const res = await fetch(`${TG_BASE}/bot${token}/getMe`);
+    // Only a 401 definitively means the token itself is invalid/revoked.
+    if (res.status === 401) return { ok: false, invalid: true };
     const json = await res.json();
-    return { ok: res.ok && json.ok };
-  } catch {
-    return { ok: false };
+    return { ok: res.ok && json.ok, invalid: false };
+  } catch (e) {
+    // Network/DNS hiccup (e.g. right after container start) — not a token problem.
+    return { ok: false, invalid: false };
   }
 }
 
@@ -216,6 +277,35 @@ function chunk(arr, n) {
 function parseAmount(s) {
   const n = parseFloat(s.trim().replace(',', '.'));
   return isNaN(n) || n <= 0 ? null : n;
+}
+
+/**
+ * Deletes a transaction and, if it came from a bank/credit sync (has a
+ * scraper identifier), registers it so it won't be re-imported on the next
+ * sync — mirrors the web app's `deleteTransaction` store action.
+ */
+function deleteTransactionAndRegister(dbObj, txnId) {
+  const dbState = dbObj.state || {};
+  const transactions = dbState.transactions || [];
+  const txn = transactions.find((t) => t.id === txnId);
+
+  dbState.transactions = transactions.filter((t) => t.id !== txnId);
+
+  if (txn?.metadata?.identifier) {
+    const identifier = String(txn.metadata.identifier);
+    const ignored = dbState.ignoredIdentifiers || [];
+    if (!ignored.includes(identifier)) dbState.ignoredIdentifiers = [...ignored, identifier];
+
+    const log = dbState.deletedTransactionsLog || [];
+    dbState.deletedTransactionsLog = [
+      { identifier, business: txn.business, amount: txn.amount, date: txn.date, deletedAt: new Date().toISOString() },
+      ...log,
+    ].slice(0, 500);
+  }
+
+  dbObj.state = dbState;
+  writeDb(dbObj);
+  return txn;
 }
 
 function progressBar(pct, len = 10) {
@@ -308,63 +398,8 @@ function getAllTransactions(dbState) {
 
 // ── Portfolio summary formatter ──────────────────────────────────────────────
 
-function getPortfolioChartUrl(dbState) {
-  const lots = dbState.lots || [];
-  const prices = dbState.prices || {};
-  const usdIls = dbState.usdIls || 3.65;
-  
-  const byTicker = {};
-  for (const lot of lots.filter((l) => !l.sellDate)) {
-    if (!byTicker[lot.ticker]) {
-      byTicker[lot.ticker] = { ticker: lot.ticker, quantity: 0, currency: lot.currency };
-    }
-    byTicker[lot.ticker].quantity += lot.quantity;
-  }
-  
-  const rows = Object.values(byTicker).map(r => {
-    const price = prices[r.ticker] ?? 0;
-    const rate = r.currency === 'USD' ? usdIls : 1;
-    const currentValueILS = r.quantity * price * rate;
-    return { symbol: r.ticker, currentValueILS };
-  }).filter(r => r.currentValueILS > 0);
-
-  if (rows.length === 0) return null;
-
-  rows.sort((a, b) => b.currentValueILS - a.currentValueILS);
-
-  const labels = rows.map(r => r.symbol);
-  const data = rows.map(r => r.currentValueILS.toFixed(0));
-
-  const chartConfig = {
-    type: 'outlabeledPie',
-    data: {
-      labels: labels,
-      datasets: [{
-        backgroundColor: [
-          '#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF',
-          '#FF9F40', '#E7E9ED', '#71B37C', '#EC932F', '#7E57C2'
-        ],
-        data: data
-      }]
-    },
-    options: {
-      plugins: {
-        legend: false,
-        outlabels: {
-          text: '%l %p',
-          color: 'white',
-          stretch: 35,
-          font: { resizable: true, minSize: 12, maxSize: 18 }
-        }
-      }
-    }
-  };
-
-  const encodedConfig = encodeURIComponent(JSON.stringify(chartConfig));
-  return `https://quickchart.io/chart?w=600&h=400&c=${encodedConfig}`;
-}
-
-function getPortfolioSummaryText(dbState) {
+/** Computes per-ticker rows (value, cost, P&L) shared by both chart builders and the text fallback. */
+function getPortfolioRows(dbState) {
   const lots = dbState.lots || [];
   const prices = dbState.prices || {};
   const usdIls = dbState.usdIls || 3.65;
@@ -372,31 +407,32 @@ function getPortfolioSummaryText(dbState) {
   const byTicker = {};
   for (const lot of lots.filter((l) => !l.sellDate)) {
     if (!byTicker[lot.ticker]) {
-      byTicker[lot.ticker] = { ticker: lot.ticker, name: lot.name, sector: lot.sector, quantity: 0, cost: 0, currency: lot.currency };
+      byTicker[lot.ticker] = { ticker: lot.ticker, name: lot.name, quantity: 0, cost: 0, currency: lot.currency };
     }
     byTicker[lot.ticker].quantity += lot.quantity;
     byTicker[lot.ticker].cost += lot.quantity * lot.buyPrice + lot.commission;
   }
 
-  const rows = Object.values(byTicker).map((r) => {
+  return Object.values(byTicker).map((r) => {
     const price = prices[r.ticker] ?? 0;
     const rate = r.currency === 'USD' ? usdIls : 1;
     const currentValueNative = r.quantity * price;
-    const costNative = r.cost;
-    const pnlNative = currentValueNative - costNative;
-    const pnlPct = costNative > 0 ? (pnlNative / costNative) * 100 : 0;
-    const currentValueILS = currentValueNative * rate;
-    const costILS = costNative * rate;
-    const pnlILS = pnlNative * rate;
+    const pnlNative = currentValueNative - r.cost;
+    const pnlPct = r.cost > 0 ? (pnlNative / r.cost) * 100 : 0;
     return {
-      ...r,
-      price,
-      currentValueILS,
-      costILS,
-      pnlILS,
+      ticker: r.ticker,
+      name: r.name,
+      currentValueILS: currentValueNative * rate,
+      costILS: r.cost * rate,
+      pnlILS: pnlNative * rate,
       pnlPct,
     };
   });
+}
+
+function getPortfolioSummaryText(dbState) {
+  const usdIls = dbState.usdIls || 3.65;
+  const rows = getPortfolioRows(dbState).filter(r => r.currentValueILS > 0);
 
   if (rows.length === 0) {
     return '⚠️ לא נמצאו מניות בתיק.';
@@ -446,6 +482,7 @@ async function sendMenu(tk, cid) {
       ['📋 הוצאות אחרונות',      `✅ ממתינות${pend > 0 ? ` (${pend})` : ''}`],
       ['🔍 חיפוש',               `📅 חיובים קרובים${upcoming > 0 ? ` (${upcoming})` : ''}`],
       ['📊 סיכום תיק מניות'],
+      ['🔄 סנכרון בנקים',        '💾 גיבוי נתונים'],
     ],
   );
 }
@@ -470,13 +507,12 @@ async function sendUpcomingCharges(tk, cid) {
   }
 }
 
-async function sendBudgetStatus(tk, cid) {
-  const dbObj = readDb();
-  const dbState = dbObj.state || {};
+/** Shared budget computation used by both the chart image and the text fallback. */
+function getBudgetData(dbState) {
   const transactions = dbState.transactions || [];
   const goals = dbState.goals || [];
   const categories = dbState.categories || [];
-  
+
   const mk = currentMonthKey();
   const monthName = new Date().toLocaleDateString('he-IL', { month: 'long', year: 'numeric' });
 
@@ -488,29 +524,66 @@ async function sendBudgetStatus(tk, cid) {
 
   const withBudget = goals
     .filter((g) => (catAmt[g.category] ?? 0) > 0 || g.targetAmount > 0)
-    .sort((a, b) => {
-      const pa = a.targetAmount > 0 ? (catAmt[a.category] ?? 0) / a.targetAmount : 0;
-      const pb = b.targetAmount > 0 ? (catAmt[b.category] ?? 0) / b.targetAmount : 0;
-      return pb - pa;
-    });
-
-  const budgetLines = withBudget.map((g) => {
-    const spent = catAmt[g.category] ?? 0;
-    const pct = g.targetAmount > 0 ? (spent / g.targetAmount) * 100 : 0;
-    const flag = pct >= 100 ? ' 🔴' : pct >= 80 ? ' ⚠️' : '';
-    return `${progressBar(pct)}  <b>${g.category}</b>  ₪${Math.round(spent).toLocaleString('he-IL')} / ₪${g.targetAmount.toLocaleString('he-IL')} (${Math.round(pct)}%)${flag}`;
-  }).join('\n');
+    .map((g) => {
+      const spent = catAmt[g.category] ?? 0;
+      const pct = g.targetAmount > 0 ? (spent / g.targetAmount) * 100 : 0;
+      return { category: g.category, spent, target: g.targetAmount, pct };
+    })
+    .sort((a, b) => b.pct - a.pct);
 
   const noBudget = categories
     .filter((c) => catAmt[c.name] && !goals.find((g) => g.category === c.name))
-    .map((c) => `${c.name} ₪${Math.round(catAmt[c.name]).toLocaleString('he-IL')}`)
-    .join(' • ');
+    .map((c) => ({ category: c.name, spent: catAmt[c.name] }));
 
-  let msg = `💰 <b>תקציב — ${monthName}</b>\n\n${budgetLines || '—'}`;
-  if (noBudget) msg += `\n\n<i>ללא תקציב:</i> ${noBudget}`;
-  msg += `\n\n💳 <b>סה"כ החודש:</b> ₪${Math.round(total).toLocaleString('he-IL')}`;
+  return { total, withBudget, noBudget, monthName };
+}
 
-  await sendMessage(tk, cid, msg);
+async function sendBudgetStatus(tk, cid) {
+  const dbObj = readDb();
+  const dbState = dbObj.state || {};
+  const { total, withBudget, noBudget, monthName } = getBudgetData(dbState);
+
+  const noBudgetText = noBudget.length
+    ? noBudget.map((c) => `${c.category} ₪${Math.round(c.spent).toLocaleString('he-IL')}`).join(' • ')
+    : '';
+
+  if (lastBudgetMsgIds.length > 0) {
+    await Promise.all(lastBudgetMsgIds.map((id) => deleteMessage(tk, cid, id)));
+    lastBudgetMsgIds = [];
+  }
+
+  if (withBudget.length === 0) {
+    let msg = `💰 <b>תקציב — ${monthName}</b>\n\n—`;
+    if (noBudgetText) msg += `\n\n<i>ללא תקציב:</i> ${noBudgetText}`;
+    msg += `\n\n💳 <b>סה"כ החודש:</b> ₪${Math.round(total).toLocaleString('he-IL')}`;
+    const msgId = await sendMessage(tk, cid, msg);
+    lastBudgetMsgIds = msgId ? [msgId] : [];
+    return;
+  }
+
+  const chartPng = renderBudgetChartPng(withBudget, monthName);
+  const untouched = withBudget.filter((g) => g.spent === 0).length;
+
+  let caption = `💰 <b>תקציב — ${monthName}</b>\n💳 סה"כ החודש: ₪${Math.round(total).toLocaleString('he-IL')}`;
+  if (untouched > 0) caption += `\n<i>${untouched} קטגוריות עם תקציב עדיין ללא הוצאה החודש</i>`;
+  if (noBudgetText) caption += `\n\n<i>ללא תקציב:</i> ${noBudgetText}`;
+
+  const newIds = [];
+  if (!chartPng) {
+    const msgId = await sendMessage(tk, cid, caption);
+    if (msgId) newIds.push(msgId);
+  } else if (caption.length <= 1000) {
+    const msgId = await sendPhoto(tk, cid, chartPng, caption);
+    if (msgId) newIds.push(msgId);
+  } else {
+    // Caption too long for a photo caption (1024-char Telegram limit) — send the
+    // chart with a short caption and the full breakdown as a follow-up message.
+    const msgId1 = await sendPhoto(tk, cid, chartPng, `💰 <b>תקציב — ${monthName}</b>`);
+    if (msgId1) newIds.push(msgId1);
+    const msgId2 = await sendMessage(tk, cid, caption);
+    if (msgId2) newIds.push(msgId2);
+  }
+  lastBudgetMsgIds = newIds;
 }
 
 async function sendLastTransactions(tk, cid, count = 5) {
@@ -709,6 +782,33 @@ async function checkBudgetWarningForCat(tk, cid, cat, spent, budget, mk) {
   }
 }
 
+/** Sends the confirm/edit/dismiss inline keyboard for a single pending item. */
+/** @returns {Promise<number|null>} the sent message_id */
+async function sendPendingItemDetail(tk, cid, txn) {
+  const d = new Date(txn.date).toLocaleDateString('he-IL', { day: '2-digit', month: '2-digit' });
+  const txt = `⏳ <b>חיוב קבוע ממתין לאישור</b>\n\n📅 ${d}\n🏪 <b>${escHtml(txn.business)}</b>\n💰 ₪${txn.amount.toLocaleString('he-IL')}\n📂 ${escHtml(txn.category)}`;
+
+  const msgId = await sendInlineKeyboard(tk, cid, txt,
+    [[
+      { text: '✅ אשר',      callback_data: `v_ok:${txn.id}` },
+      { text: '✏️ שנה סכום', callback_data: `v_edit:${txn.id}` },
+      { text: '🗑️ התעלם',    callback_data: `v_dismiss:${txn.id}` },
+    ]],
+  );
+
+  if (!msgId) {
+    return sendMessage(tk, cid,
+      `⏳ ממתין: ${escHtml(txn.business)} — ₪${txn.amount.toLocaleString('he-IL')} (${escHtml(txn.category)})\n` +
+      `אנא אשר דרך ממשק האתר.`
+    );
+  }
+  return msgId;
+}
+
+/**
+ * Sends one numbered summary image of all pending items. To act on one, the
+ * user replies with its number — handled by the 'pending_select' wizard step.
+ */
 async function checkPendingTransactions(tk, cid, force = false) {
   const dbObj = readDb();
   const allTxns = getAllTransactions(dbObj.state || {});
@@ -719,31 +819,102 @@ async function checkPendingTransactions(tk, cid, force = false) {
     return;
   }
 
-  if (force) {
-    for (const txn of pending) sentPendingAlerts.delete(`pend:${txn.id}`);
+  if (lastPendingMsgIds.length > 0) {
+    await Promise.all(lastPendingMsgIds.map((id) => deleteMessage(tk, cid, id)));
+    lastPendingMsgIds = [];
   }
 
-  for (const txn of pending) {
-    const key = `pend:${txn.id}`;
-    if (!force && sentPendingAlerts.has(key)) continue;
-    sentPendingAlerts.add(key);
+  const png = renderPendingSummaryPng(pending);
+  const newIds = [];
+  if (png) {
+    const msgId = await sendPhoto(tk, cid, png, 'שלח את המספר של העסקה כדי לאשר / לערוך / להתעלם ממנה');
+    if (msgId) newIds.push(msgId);
+  } else {
+    for (const txn of pending) {
+      const msgId = await sendPendingItemDetail(tk, cid, txn);
+      if (msgId) newIds.push(msgId);
+    }
+  }
+  lastPendingMsgIds = newIds;
+  conv = { step: 'pending_select', ids: pending.map((t) => t.id) };
+}
 
-    const d = new Date(txn.date).toLocaleDateString('he-IL', { day: '2-digit', month: '2-digit' });
-    const txt = `⏳ <b>חיוב קבוע ממתין לאישור</b>\n\n📅 ${d}\n🏪 <b>${escHtml(txn.business)}</b>\n💰 ₪${txn.amount.toLocaleString('he-IL')}\n📂 ${escHtml(txn.category)}`;
+/** Builds and sends the full-data JSON backup file — identical to the website's "ייצא JSON" export. */
+async function sendBackupFile(tk, cid) {
+  try {
+    const buffer = buildBackupBuffer();
+    const filename = `finstar-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    const ok = await sendDocument(tk, cid, buffer, filename, '💾 גיבוי נתונים מלא (ללא פרטי חיבור לבנק)');
+    if (!ok) await sendMessage(tk, cid, '⚠️ שליחת קובץ הגיבוי נכשלה.');
+  } catch (err) {
+    await sendMessage(tk, cid, `⚠️ יצירת הגיבוי נכשלה: ${String(err?.message || err).slice(0, 150)}`);
+  }
+}
 
-    const msgId = await sendInlineKeyboard(tk, cid, txt,
-      [[
-        { text: '✅ אשר',      callback_data: `v_ok:${txn.id}` },
-        { text: '✏️ שנה סכום', callback_data: `v_edit:${txn.id}` },
-        { text: '🗑️ התעלם',    callback_data: `v_dismiss:${txn.id}` },
-      ]],
-    );
+/** Runs a full bank/credit sync and reports newly-found transactions + AI categorization back to the chat. */
+async function runSyncCommand(tk, cid) {
+  const settingsObj = readSettings();
+  const bankAccounts = settingsObj.state?.bankAccounts || [];
+  if (bankAccounts.length === 0) {
+    await sendMessage(tk, cid, '⚠️ לא הוגדרו חשבונות בנק/אשראי בהגדרות.');
+    return;
+  }
 
-    if (!msgId) {
-      await sendMessage(tk, cid,
-        `⏳ ממתין: ${escHtml(txn.business)} — ₪${txn.amount.toLocaleString('he-IL')} (${escHtml(txn.category)})\n` +
-        `אנא אשר דרך ממשק האתר.`
-      );
+  await sendMessage(tk, cid, `🔄 <b>מתחיל סנכרון...</b>\n${bankAccounts.length} חשבונות. זה עשוי לקחת כמה דקות.`);
+
+  let result;
+  try {
+    result = await runBankSync();
+  } catch (err) {
+    await sendMessage(tk, cid, `⚠️ הסנכרון נכשל: ${String(err?.message || err).slice(0, 150)}`);
+    return;
+  }
+
+  const accLines = result.accountResults.map((a) =>
+    a.ok ? `✅ ${escHtml(a.nickname)} — ${a.count} עסקאות חדשות` : `❌ ${escHtml(a.nickname)} — ${escHtml(a.error)}`
+  );
+  await sendMessage(tk, cid, `🔄 <b>סנכרון הושלם</b>\n\n${accLines.join('\n')}`);
+
+  const { newExpenses, newIncomes, toDelete, toLink, threshold } = result;
+
+  if (newExpenses.length === 0 && newIncomes.length === 0) {
+    await sendMessage(tk, cid, 'לא נמצאו עסקאות חדשות.');
+    return;
+  }
+
+  if (newExpenses.length > 0) {
+    const lines = newExpenses.map((tx, i) => {
+      const conf = typeof tx.aiConfidence === 'number' ? ` (${tx.aiConfidence}%${tx.aiConfidence < threshold ? ' — מתחת לסף' : ''})` : '';
+      return `${i + 1}. 🏪 <b>${escHtml(tx.business)}</b>  ₪${tx.amount.toLocaleString('he-IL')} — ${escHtml(tx.category)}${conf}`;
+    });
+    for (const group of chunk(lines, 20)) {
+      await sendMessage(tk, cid, `📋 <b>עסקאות חדשות (${newExpenses.length}):</b>\n\n${group.join('\n')}`);
+    }
+  }
+
+  if (newIncomes.length > 0) {
+    const lines = newIncomes.map((inc, i) => `${i + 1}. 💰 <b>${escHtml(inc.source)}</b>  ₪${inc.netAmount.toLocaleString('he-IL')} — ${escHtml(inc.type)}`);
+    for (const group of chunk(lines, 20)) {
+      await sendMessage(tk, cid, `💰 <b>הכנסות חדשות (${newIncomes.length}):</b>\n\n${group.join('\n')}`);
+    }
+  }
+
+  if (toDelete.length > 0) {
+    const lines = toDelete.map((d, i) => `${i + 1}. ${escHtml(d.reason)}`);
+    for (const group of chunk(lines, 20)) {
+      await sendMessage(tk, cid, `🗑️ <b>המלצות מחיקה (${toDelete.length}):</b>\n\n${group.join('\n')}\n\n<i>אשר/דחה דרך ממשק האתר.</i>`);
+    }
+  }
+
+  if (toLink.length > 0) {
+    const dbObj = readDb();
+    const recurring = dbObj.state?.recurring || [];
+    const lines = toLink.map((l, i) => {
+      const rec = recurring.find((r) => r.id === l.recurringId);
+      return `${i + 1}. → <b>${escHtml(rec?.name || l.recurringId)}</b> — ${escHtml(l.reason)}`;
+    });
+    for (const group of chunk(lines, 20)) {
+      await sendMessage(tk, cid, `🔗 <b>המלצות קישור לחיוב קבוע (${toLink.length}):</b>\n\n${group.join('\n')}\n\n<i>אשר/דחה דרך ממשק האתר.</i>`);
     }
   }
 }
@@ -781,14 +952,7 @@ async function handleText(text, msgDate, tk, cid) {
   if (t.includes('ממתינות')) {
     conv = { step: 'idle' };
     try {
-      const allTxns = getAllTransactions(dbState);
-      const pendNow = allTxns.filter((x) => x.isVirtual);
-      if (pendNow.length === 0) {
-        await sendMessage(tk, cid, '✅ אין עסקאות ממתינות לאישור.');
-      } else {
-        await sendMessage(tk, cid, `⏳ נמצאו ${pendNow.length} עסקאות ממתינות:`);
-        await checkPendingTransactions(tk, cid, true);
-      }
+      await checkPendingTransactions(tk, cid, true);
       await sendMenu(tk, cid);
     } catch (err) {
       await sendMessage(tk, cid, `⚠️ שגיאה בטעינת ממתינות: ${String(err).slice(0, 80)}`);
@@ -802,23 +966,51 @@ async function handleText(text, msgDate, tk, cid) {
   }
   if (t.startsWith('📊 סיכום תיק')) {
     conv = { step: 'idle' };
-    const pSummary = getPortfolioSummaryText(dbState);
-    if (pSummary.includes('לא נמצאו מניות בתיק')) {
-      await sendMessage(tk, cid, pSummary);
+    const rows = getPortfolioRows(dbState).filter(r => r.currentValueILS > 0);
+    if (rows.length === 0) {
+      await sendMessage(tk, cid, '⚠️ לא נמצאו מניות בתיק.');
       return;
     }
-    const chartUrl = getPortfolioChartUrl(dbState);
-    if (chartUrl) {
-      await sendPhoto(tk, cid, chartUrl, `📊 שווי תיק נוכחי`);
-      await sendMessage(tk, cid, pSummary);
-    } else {
-      await sendMessage(tk, cid, pSummary);
+    try {
+      const png = await renderPortfolioChartPng(dbState.lots || [], dbState.usdIls || 3.65, rows);
+      if (png) {
+        // Remove the previous summary's photos so re-requesting it doesn't just pile up images.
+        if (lastPortfolioMsgIds.length > 0) {
+          await Promise.all(lastPortfolioMsgIds.map((id) => deleteMessage(tk, cid, id)));
+          lastPortfolioMsgIds = [];
+        }
+        const newIds = [];
+        const msgId1 = await sendPhoto(tk, cid, png);
+        if (msgId1) newIds.push(msgId1);
+        const cardsPng = renderPortfolioCardsPng(rows);
+        if (cardsPng) {
+          const msgId2 = await sendPhoto(tk, cid, cardsPng);
+          if (msgId2) newIds.push(msgId2);
+        }
+        lastPortfolioMsgIds = newIds;
+      } else {
+        // Not enough price history to draw the line chart — fall back to text.
+        await sendMessage(tk, cid, getPortfolioSummaryText(dbState));
+      }
+    } catch (e) {
+      console.error('[Telegram Bot] Failed to render portfolio chart:', e);
+      await sendMessage(tk, cid, getPortfolioSummaryText(dbState));
     }
     return;
   }
   if (t.startsWith('📅 חיובים')) {
     conv = { step: 'idle' };
     await sendUpcomingCharges(tk, cid);
+    return;
+  }
+  if (t.startsWith('🔄 סנכרון')) {
+    conv = { step: 'idle' };
+    await runSyncCommand(tk, cid);
+    return;
+  }
+  if (t.startsWith('💾 גיבוי')) {
+    conv = { step: 'idle' };
+    await sendBackupFile(tk, cid);
     return;
   }
 
@@ -836,6 +1028,8 @@ async function handleText(text, msgDate, tk, cid) {
       `/budget — תקציב החודש\n` +
       `/last — 5 הוצאות אחרונות\n` +
       `/pending — עסקאות ממתינות\n` +
+      `/sync — סנכרון חשבונות בנק/אשראי\n` +
+      `/backup — קובץ גיבוי JSON מלא\n` +
       `/find [מילה] — חיפוש\n` +
       `/cancel — בטל פעולה נוכחית\n\n` +
       `<b>הוספה מהירה:</b> <code>150 קפה גרג</code>\n\n` +
@@ -866,6 +1060,16 @@ async function handleText(text, msgDate, tk, cid) {
     await checkPendingTransactions(tk, cid, true);
     return;
   }
+  if (t === '/sync') {
+    conv = { step: 'idle' };
+    await runSyncCommand(tk, cid);
+    return;
+  }
+  if (t === '/backup') {
+    conv = { step: 'idle' };
+    await sendBackupFile(tk, cid);
+    return;
+  }
   if (t.startsWith('/find')) {
     conv = { step: 'idle' };
     const kw = t.slice(5).trim();
@@ -878,6 +1082,24 @@ async function handleText(text, msgDate, tk, cid) {
   }
 
   // ── Wizard steps ───────────────────────────────────────────────────────────
+  if (state.step === 'pending_select') {
+    const num = Number(t);
+    if (!Number.isInteger(num) || num < 1 || num > state.ids.length) {
+      await sendMessage(tk, cid, `⚠️ שלח מספר בין 1 ל-${state.ids.length} (לפי התמונה), או /cancel לביטול`);
+      return;
+    }
+    const txnId = state.ids[num - 1];
+    conv = { step: 'idle' };
+    const allTxns = getAllTransactions(dbState);
+    const txn = allTxns.find((x) => x.id === txnId);
+    if (!txn) {
+      await sendMessage(tk, cid, '⚠️ העסקה כבר לא קיימת (אולי טופלה כבר). שלח /pending לרשימה מעודכנת.');
+      return;
+    }
+    await sendPendingItemDetail(tk, cid, txn);
+    return;
+  }
+
   if (state.step === 'find') {
     conv = { step: 'idle' };
     await sendFindResults(tk, cid, t);
@@ -1122,10 +1344,8 @@ async function handleCallback(queryId, data, msgId, tk, cid) {
   
   if (data.startsWith('txn_del_ok:')) {
     const txnId = data.slice(11);
-    const txn = transactions.find((x) => x.id === txnId);
     await answerCallbackQuery(tk, queryId, '🗑️ נמחק');
-    dbObj.state.transactions = transactions.filter(t => t.id !== txnId);
-    writeDb(dbObj);
+    const txn = deleteTransactionAndRegister(dbObj, txnId);
     if (msgId) await editMessageText(tk, cid, msgId, `🗑️ <b>${txn?.business ?? 'הוצאה'}</b> נמחקה`);
     return;
   }
@@ -1238,10 +1458,8 @@ async function handleCallback(queryId, data, msgId, tk, cid) {
 
   if (data.startsWith('txn_del_pend:')) {
     const txnId = data.slice(13);
-    const txn = transactions.find((x) => x.id === txnId);
     await answerCallbackQuery(tk, queryId, '🗑️ נמחק');
-    dbObj.state.transactions = transactions.filter(t => t.id !== txnId);
-    writeDb(dbObj);
+    const txn = deleteTransactionAndRegister(dbObj, txnId);
     if (msgId) await editMessageText(tk, cid, msgId, `🗑️ <b>${escHtml(txn?.business ?? 'הוצאה')}</b> נמחקה`);
     await sendMenu(tk, cid);
     return;
@@ -1576,9 +1794,16 @@ export async function startTelegramBot() {
   try {
     const testRes = await testBot(tk);
     if (!testRes.ok) {
-      console.error('[Telegram Bot] Connection error: Token is invalid. Disabling polling in settings.');
-      settingsObj.state.telegramPollingEnabled = false;
-      writeSettings(settingsObj);
+      if (testRes.invalid) {
+        console.error('[Telegram Bot] Connection error: Token is invalid (401). Disabling polling in settings.');
+        settingsObj.state.telegramPollingEnabled = false;
+        writeSettings(settingsObj);
+      } else {
+        // Transient — e.g. network not up yet right after container start. Don't
+        // disable polling; the poll loop below will keep retrying every 5s and
+        // recover on its own once Telegram is reachable.
+        console.warn('[Telegram Bot] Could not reach Telegram at startup — will keep retrying.');
+      }
       pollTimeout = setTimeout(pollNext, POLL_MS);
       scheduledTimer = setInterval(scheduled, CHECK_MS);
       return;

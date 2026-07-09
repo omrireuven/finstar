@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Bot, TrendingUp, Bell, CheckCircle, XCircle, Loader2, AlertTriangle, Camera, Building2, CheckCircle2, Save, Check, Receipt, CalendarRange, Landmark, Wallet, PiggyBank, Target, Book, Tag, Cog, Sparkles, HandCoins, Building, RefreshCw } from 'lucide-react';
+import { Bot, TrendingUp, Bell, CheckCircle, XCircle, Loader2, AlertTriangle, Camera, Building2, CheckCircle2, Save, Check, Receipt, CalendarRange, Landmark, Wallet, PiggyBank, Target, Book, Tag, Cog, Sparkles, HandCoins, Building, RefreshCw, Trash2, RotateCcw } from 'lucide-react';
 import { useSettings } from '../store/settingsStore';
 import { useStore, usePortfolioSummary } from '../store';
 import { manualSyncExchangeRate } from '../hooks/useExchangeRateSync';
@@ -51,7 +51,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 
 export default function Settings() {
   const s = useSettings();
-  const { resetAllData, resetDataPartial, usdIls, usdIlsLastUpdate, setUsdIls, lots } = useStore();
+  const { resetAllData, resetDataPartial, usdIls, usdIlsLastUpdate, setUsdIls, lots, deletedTransactionsLog, unignoreIdentifier } = useStore();
   const { rows: portfolioRows } = usePortfolioSummary();
   const [capturingChart, setCapturingChart] = useState(false);
   const [chartSendStatus, setChartSendStatus] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
@@ -80,7 +80,7 @@ export default function Settings() {
       const date = new Date().toLocaleDateString('he-IL');
       const ok = await sendPhoto(s.telegramBotToken, s.telegramChatId, blob, `📊 סיכום תיק מניות — ${date}`);
       setChartSendStatus(ok ? 'ok' : 'error');
-    } catch {
+    } catch (e) {
       setChartSendStatus('error');
     } finally {
       setCapturingChart(false);
@@ -238,7 +238,7 @@ export default function Settings() {
     try {
       const res = await fetchQuotes(['AAPL'], s.corsProxy);
       setStockTestStatus(res['AAPL'] ? 'ok' : 'error');
-    } catch {
+    } catch (e) {
       setStockTestStatus('error');
     }
   }
@@ -980,6 +980,47 @@ export default function Settings() {
                   />
                 </label>
               </div>
+            </Section>
+          </Card>
+
+          <Card className="space-y-4">
+            <Section title="עסקאות שנמחקו">
+              <p className="text-sm text-slate-500">
+                עסקאות שנמחקו (באתר או בטלגרם) ומגיעות מסנכרון בנק/אשראי לא ייובאו שוב באופן אוטומטי.
+                {deletedTransactionsLog.length > 0 && ` (${deletedTransactionsLog.length} רשומות)`}
+              </p>
+              {deletedTransactionsLog.length === 0 ? (
+                <p className="text-sm text-slate-400 italic">אין עדיין עסקאות שנמחקו.</p>
+              ) : (
+                <div className="max-h-80 overflow-y-auto space-y-2 -mx-1 px-1">
+                  {deletedTransactionsLog.map((entry) => (
+                    <div
+                      key={`${entry.identifier}-${entry.deletedAt}`}
+                      className="flex items-center justify-between gap-3 bg-slate-50 rounded-xl px-3 py-2 text-sm"
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Trash2 size={14} className="text-slate-400 shrink-0" />
+                        <div className="min-w-0">
+                          <div className="font-medium text-slate-800 truncate">{entry.business}</div>
+                          <div className="text-xs text-slate-400">
+                            ₪{entry.amount.toLocaleString('he-IL')} · {new Date(entry.date).toLocaleDateString('he-IL')}
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => {
+                          unignoreIdentifier(entry.identifier);
+                          toast.success(`"${entry.business}" יוכל להיכנס שוב בסנכרון הבא`);
+                        }}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 shrink-0"
+                        title="הסר מרשימת החסימה — התנועה תיובא שוב בסנכרון הבא"
+                      >
+                        <RotateCcw size={12} /> שחזר
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </Section>
           </Card>
 

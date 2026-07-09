@@ -17,10 +17,14 @@ if (!existsSync(DB_FILE)) {
 app.get('/api/db', (_req, res) => {
   try {
     const raw = readFileSync(DB_FILE, 'utf-8');
+    if (!raw.trim()) {
+      return res.json({});
+    }
     const data = JSON.parse(raw);
     res.json(data);
-  } catch {
-    res.json({});
+  } catch (err) {
+    console.error('Failed to parse DB:', err);
+    res.status(500).json({ error: 'Database file corrupted or unreadable' });
   }
 });
 
@@ -35,10 +39,14 @@ if (!existsSync(SETTINGS_FILE)) {
 app.get('/api/settings', (_req, res) => {
   try {
     const raw = readFileSync(SETTINGS_FILE, 'utf-8');
+    if (!raw.trim()) {
+      return res.json({});
+    }
     const data = JSON.parse(raw);
     res.json(data);
-  } catch {
-    res.json({});
+  } catch (err) {
+    console.error('Failed to parse Settings:', err);
+    res.status(500).json({ error: 'Settings file corrupted or unreadable' });
   }
 });
 
@@ -46,6 +54,9 @@ app.get('/api/settings', (_req, res) => {
 app.post('/api/settings', (req, res) => {
   try {
     const body = req.body;
+    // Bind-mounting a single file (rather than a directory) into the
+    // container means the temp-file+rename dance fails with EBUSY on
+    // Docker Desktop's file-sharing layer, so we write in place instead.
     writeFileSync(SETTINGS_FILE, JSON.stringify(body), 'utf-8');
     res.json({ ok: true });
   } catch (err) {
@@ -58,6 +69,9 @@ app.post('/api/settings', (req, res) => {
 app.post('/api/db', (req, res) => {
   try {
     const body = req.body;
+    // Bind-mounting a single file (rather than a directory) into the
+    // container means the temp-file+rename dance fails with EBUSY on
+    // Docker Desktop's file-sharing layer, so we write in place instead.
     writeFileSync(DB_FILE, JSON.stringify(body), 'utf-8');
     res.json({ ok: true });
   } catch (err) {

@@ -43,12 +43,12 @@ export function learnCategory(business: string, category: Category) {
     const stored = JSON.parse(localStorage.getItem('finstar_learned_cats') || '{}');
     stored[business] = category;
     localStorage.setItem('finstar_learned_cats', JSON.stringify(stored));
-  } catch {}
+  } catch (e) {}
 }
 
 export function loadLearnedCategories() {
   try {
     const stored = JSON.parse(localStorage.getItem('finstar_learned_cats') || '{}');
     Object.assign(LEARNED_MAP, stored);
-  } catch {}
+  } catch (e) {}
 }

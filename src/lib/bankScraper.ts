@@ -20,7 +20,7 @@ export async function checkScraperHealth(): Promise<boolean> {
   try {
     const res = await fetch(`${SCRAPE_API}/health`, { signal: AbortSignal.timeout(3000) });
     return res.ok;
-  } catch {
+  } catch (e) {
     return false;
   }
 }
